@@ -24,10 +24,10 @@ parser.add_argument('--skip',help="Specify text list of columns to skip (comma s
 parser.add_argument('--down',help="Integer factor by which to downsample the data.")
 args=parser.parse_args()
 
-mdim=2
+mdim=6
 
 #Npts=int(sys.argv[1])
-Npts=12500
+Npts=5000
 kcent=int(args.k)
 parnames=None
 outname="test.pdf"
@@ -58,7 +58,7 @@ if(args.data==None):
         print np.array(points)
         print "generated Npts=",len(points)
 else:
-    outname=args.data.replace(".dat","_cluster.pdf")
+    outname=args.data.replace(".dat","_xgmm.pdf")
     with open(args.data) as f:
         points=np.loadtxt((x.replace(b':',b' ') for x in f))
     print "Raw data line:",points[0]
