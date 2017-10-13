@@ -1,0 +1,6 @@
+*.jpg
+*.pdf
+*.pyc
+*.out*
+ptmcmc
+*.mp4

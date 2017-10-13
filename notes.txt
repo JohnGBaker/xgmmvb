@@ -1,0 +1,14 @@
+kdtree.py:
+	Realizes a kmeans with kdtrees
+
+xmeans.py: Realizes xmeans with kdtrees
+
+gmm.py: Realizes gmm clustering
+
+###
+making movie from multipage pdf:
+python testgmm.py
+convert test.pdf test-%03d.jpg
+ffmpeg -pattern_type glob -i 'test-*.jpg' -r 20 -pix_fmt yuv420p test.mp4
+rm test-???.jpg
+	
