@@ -245,6 +245,7 @@ class gmm:
         alpha0=[a for a in alpha]
         noskip=False
         print "active =",activeComponents
+        every=1
         for count in range(MaxSteps):
             #print "n=",count,activeComponents
             #print "calling maxStep"
@@ -257,8 +258,10 @@ class gmm:
             #print "lndetsigma=",self.lndetsigma
             if(False and activeComponents is not None):
                 for j in activeComponents: print " mu[",j,"]=",self.mu[j]
-            print count,"lpost=",lpost,"phi=",self.phi
-            print "mu1=",self.mu[1]
+            #print count,"lpost=",lpost,"phi=",self.phi
+            if(count%every==0):print count,"lpost=",lpost
+            if(count/every>3):every*=2
+            #print "mu1=",self.mu[1]
             if(backend is not None):
                 global displayCounter, displayEvery
                 if(displayCounter%displayEvery==0):
@@ -286,123 +289,7 @@ class gmm:
         w,alpha=self.expectationStep(x)
         self.maximizationStep(x,w)
         
-    def improveStructure(self,points,sloppyWeights=False):
-        #this version stops after finding the first worth splitting
-        #loop over components
-        splits=[False]*self.k
-        replacements=[]
-        for j in np.random.permutation(self.k):
-            #  split center into two
-            #  choose farthest of several from the component distribution and reflect
-            x0s=np.random.multivariate_normal(self.mu[j],self.sigma[j],3)
-            dists=[np.linalg.norm(x0-self.mu[j]) for x0 in x0s]
-            maxdist=max(dists)
-            x0=x0s[dists.index(maxdist)]
-            x1=-x0+2.0*self.mu[j] #thus x0-mu + x1-mu = 0
-            #newmu=np.ma.concatenate((self.mu[:j],[x0,x1],self.mu[j+1:]))
-            newmu=np.concatenate((self.mu,[x1]))
-            newmu[j,:]=x0;
-            #copy covariance to new cluster
-            #newsigma=np.ma.concatenate((self.sigma[:j],[self.sigma[j],self.sigma[j]],self.sigma[j+1:]))
-            newsigma=np.concatenate((self.sigma,[self.sigma[j]]))
-            print j,": mu=",newmu,"\n    sigma=",newsigma
-            newmodel=gmm(newmu,self.kappa,newsigma)
-            #actives=[j,j+1]
-            actives=[j,self.k]
-            #first, partially optimize allowing all clusters to evolve
-            newmodel.run_EM_MAP(points,sloppyWeights=sloppyWeights,MaxSteps=5)
-            #perform cluster optimization with all-but these new clusters fixed
-            #profile.runctx("newmodel.run_EM_MAP(points,activeComponents=[j,j+1])",globals(),locals())
-            newmodel.run_EM_MAP(points,activeComponents=actives,sloppyWeights=sloppyWeights)
-            #  compare new BIC to original clustering BIC
-            print "BICs orig/new",self.BICevid,newmodel.BICevid
-            print "lposts orig/new",self.lpost,newmodel.lpost
-            #Should we also consider re-joining components?
-            #if(newmodel.BICevid>self.BICevid):replacements.append([j,newmodel])
-            if(newmodel.BICevid>self.BICevid):
-                print "Found improved model:",newmodel
-                newmodel.show()
-                return newmodel
-        return self
-    
-    def improveStructure2(self,points,sloppyWeights=False,backend=None):
-        #This version continues through, considering splits for each of
-        #the whole (at call time) list of components
-        #Other differences are:
-        #     tolOverlap=0.3  Significantly overlapping components are
-        #                     co-optimised during the split EMs
-        #        tolRelax=10  Provides a relaxed tolerance for split EMs
-        #                     though full tol used if it seems that the BIC
-        #                     diff is close (less than tolRelax^2)
-        
-        splits=[False]*self.k
-        replacements=[]
-        w,alpha=self.expectationStep(points)
-        updatelist=np.random.permutation(self.k)
-        model=self
-        EMtol=self.EMtol
-        tolRelax=10
-        tolOverlap=0.03
-        for j in updatelist:
-            #We first compute the overlap of this component with others
-            overs=[np.sum(w[:,j]*w[:,k]) for k in range(model.k)]
-            overs=np.array(overs)/sum(overs)
-            active=[i for i in range(len(overs)) if overs[i]>tolOverlap]
-            print j,": overlaps =",overs
-            print "-> active =",active
-            #  split center into two
-            #  choose farthest of several from the component distribution and reflect
-            x0s=np.random.multivariate_normal(model.mu[j],model.sigma[j],3)
-            dists=[np.linalg.norm(x0-model.mu[j]) for x0 in x0s]
-            maxdist=max(dists)
-            x0=x0s[dists.index(maxdist)]
-            x1=-x0+2.0*model.mu[j] #thus x0-mu + x1-mu = 0
-            #newmu=np.ma.concatenate((model.mu[:j],[x0,x1],model.mu[j+1:]))
-            newmu=np.concatenate((model.mu,[x1]))
-            newmu[j,:]=x0;
-            #form new phi
-            newphi=np.concatenate((model.phi,[0.5*model.phi[j]]))
-            newphi[j]*=0.5;
-            #copy covariance to new cluster
-            #newsigma=np.ma.concatenate((model.sigma[:j],[model.sigma[j],model.sigma[j]],model.sigma[j+1:]))
-            newsigma=np.concatenate((model.sigma,[model.sigma[j]]))
-            print j,": mu=",newmu,"\n    sigma=",newsigma
-            actives=active+[model.k]
-            newmodel=gmm(newmu,model.kappa,newsigma,newphi)
-            newmodel.EMtol=EMtol*tolRelax
-            newmodel.run_EM_MAP(points,activeComponents=actives,sloppyWeights=sloppyWeights)
-            #  compare new BIC to original clustering BIC
-            if(newmodel.BICevid>model.BICevid and model.BICevid-newmodel.BICevid<EMtol*tolRelax**2):#This is a close call continue EM with orig EMtol
-                newmodel.EMtol=EMtol
-            #Run a second time for "trimming" [resets relative weights]
-            newmodel.run_EM_MAP(points,activeComponents=actives,sloppyWeights=sloppyWeights)
-            print "BICs orig/new",model.BICevid,newmodel.BICevid
-            print "lposts orig/new",model.lpost,newmodel.lpost
-            print "model:\n",model.show()
-            print "newmodel:\n",newmodel.show()
-            if(newmodel.BICevid>model.BICevid):
-                print "Found improved model:"
-                #newmodel.show()
-                newmodel.EMtol=EMtol
-                model=newmodel
-                #we accept the newmodel as model
-                #we don't run full EM, but we do need to update w and we
-                #(don't?) update the model params
-                w,alpha=model.expectationStep(points)
-                #model.maximizationStep(points,w)
-                #print "model.phi=",model.phi
-                print "model.phi=",np.array2string(model.phi,formatter={'float_kind':lambda x: "%.5f" % x})
-                if(backend is not None):#do it all over for display purposes
-                    newmodel=gmm(newmu,model.kappa,newsigma,newphi)
-                    newmodel.EMtol=EMtol*tolRelax
-                    newmodel.run_EM_MAP(points,activeComponents=actives,sloppyWeights=sloppyWeights,backend=backend)
-                    if(newmodel.BICevid>model.BICevid and model.BICevid-newmodel.BICevid<EMtol*tolRelax**2):newmodel.EMtol=EMtol
-                    newmodel.run_EM_MAP(points,activeComponents=actives,sloppyWeights=sloppyWeights,backend=backend)
-        return model
-
     def improveStructure3(self,points,sloppyWeights=False,backend=None,nSamp=1500):
-        version3=True
-        version2p5=False  #similar but not identical to v2 above
         #Like V2,  continues through, considering splits for each of
         #the whole (at call time) list of components
         #Other differences from V1 are:
@@ -421,11 +308,15 @@ class gmm:
         w,alpha=self.expectationStep(points)
         updatelist=np.random.permutation(self.k)
         model=self
+        model.evaluate(points)
         EMtol=self.EMtol
         tolRelax=10
         tolOverlap=0.03
         wCut=1.0/nSamp/nSamp
+        jcount=0
         for j in updatelist:
+            jcount+=1
+            print "\nTrying split "+str(jcount)+"/"+str(len(updatelist))
             #We first compute the overlap of this component with others
             #Use full points w for this
             overs=[np.sum(w[:,j]*w[:,k]) for k in range(model.k)]
@@ -434,12 +325,10 @@ class gmm:
             print j,": overlaps =",overs
             print "-> active =",active
             #Next we downselect to just the relevant points
-            if(version3):
-                jpoints=self.samplePoints(points,nSamp=nSamp,target=j,actives=active,w=w)
-                wj,alphaj=model.expectationStep(jpoints)
-            else:
-                jpoints=points
-                wj=w
+            jpoints=self.samplePoints(points,nSamp=nSamp,target=j,actives=active,w=w)
+            #Work with a parallel test model (on the reduced set of points)
+            testmodel=gmm(model.mu,model.kappa,model.sigma,model.phi)
+            wj,alphaj=testmodel.expectationStep(jpoints)
             #  split center into two
             #  choose farthest of several from the component distribution and reflect
             x0s=np.random.multivariate_normal(model.mu[j],model.sigma[j],3)
@@ -456,40 +345,35 @@ class gmm:
             #copy covariance to new cluster
             #newsigma=np.ma.concatenate((model.sigma[:j],[model.sigma[j],model.sigma[j]],model.sigma[j+1:]))
             newsigma=np.concatenate((model.sigma,[model.sigma[j]]))
-            print j,": mu=",newmu,"\n    sigma=",newsigma
+            #print j,": mu=",newmu,"\n    sigma=",newsigma
             actives=active+[model.k]
             newmodel=gmm(newmu,model.kappa,newsigma,newphi)
+            #tol-1 cycle
             newmodel.EMtol=EMtol*tolRelax
             newmodel.run_EM_MAP(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights)
-            if(version3):
-                #also run a parallel test model (on the reduced set of points)
-                testmodel=gmm(model.mu,model.kappa,model.sigma,model.phi)
-                testmodel.show()
-                testmodel.EMtol=EMtol*tolRelax
-                testmodel.run_EM_MAP(jpoints,activeComponents=active,sloppyWeights=sloppyWeights)
-            else:
-                testmodel=model
+            #testmodel.show()
+            testmodel.EMtol=EMtol*tolRelax
+            testmodel.run_EM_MAP(jpoints,activeComponents=active,sloppyWeights=sloppyWeights)
             #  compare new BIC to original clustering BIC [wrt all points]
-            if(True or not version3):
-                if(newmodel.BICevid>testmodel.BICevid and testmodel.BICevid-newmodel.BICevid<EMtol*tolRelax**2):#This is a close call continue EM with orig EMtol
-                    newmodel.EMtol=EMtol
-                    if(version3):testmodel.EMtol=EMtol
-                #Run a second time for "trimming" [resets relative weights]
-                newmodel.run_EM_MAP(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights)
-                if(version3):testmodel.run_EM_MAP(jpoints,activeComponents=active,sloppyWeights=sloppyWeights)
+            #tol-2 cycle
+            if(newmodel.BICevid>testmodel.BICevid and testmodel.BICevid-newmodel.BICevid<EMtol*tolRelax**2):#This is a close call continue EM with orig EMtol
+                newmodel.EMtol=EMtol
+                testmodel.EMtol=EMtol
+            #Run a second time for "trimming" [resets relative weights]
+            newmodel.run_EM_MAP(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights)
+            testmodel.run_EM_MAP(jpoints,activeComponents=active,sloppyWeights=sloppyWeights)
 
-            if(version2p5 or version3):
-                testmodel.update(points)  
-                testmodel.evaluate(points)  
-                #must update phi,sigma,mu for all pts to get correct results
-                newmodel.update(points)  
-                newmodel.evaluate(points)
+            #testmodel.update(points)  
+            #testmodel.evaluate(points)  
+            #must update phi,sigma,mu for all pts to get correct results
+            newmodel.update(points)  
+            newmodel.evaluate(points)
             print "actives=",actives
-            print "BICs orig/new",testmodel.BICevid,newmodel.BICevid
-            print "lposts orig/new",testmodel.lpost,newmodel.lpost
-            print "testmodel:\n",testmodel.show()
-            print "newmodel:\n",newmodel.show()
-            if(newmodel.BICevid>testmodel.BICevid):
+            print "BICs orig/new",model.BICevid,newmodel.BICevid
+            print "lposts orig/new",model.lpost,newmodel.lpost
+            #print "model:\n",model.show()
+            #print "newmodel:\n",newmodel.show()
+            if(newmodel.BICevid>model.BICevid):
                 print "Found improved model:"
                 #newmodel.show()
                 newmodel.EMtol=EMtol
@@ -498,11 +382,11 @@ class gmm:
                 #we don't run full EM, but we do need to update w and we
                 #(do?) update the model params
                 w,alpha=model.expectationStep(points)#update w
-                if(version3 ):
-                    #must reeval model above if doing this...
-                    model.maximizationStep(points,w)
-                    model.evaluate(points)
-                if(version3):
+                #must reeval model above if doing this...
+                model.maximizationStep(points,w)
+                model.evaluate(points)
+                print "evaluated model: BIC=",model.BICevid,"lpost=",model.lpost
+                if(True):
                     phisum=np.sum(self.phi)
                     print " [before] =",np.array2string(model.phi,formatter={'float_kind':lambda x: "%.5f" % x})
                     print "lndetsigma=",model.lndetsigma
@@ -515,6 +399,7 @@ class gmm:
                     if(newmodel.BICevid>model.BICevid and model.BICevid-newmodel.BICevid<EMtol*tolRelax**2):newmodel.EMtol=EMtol
                     newmodel.run_EM_MAP(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights,backend=backend)
                 
+        print "returning with BIC=",model.BICevid
         return model
     
     def samplePoints(self,points,nSamp=1500,target=None,actives=None,w=None):
@@ -657,19 +542,27 @@ def compute_gmm(points,k,kappa=0,backend=None,sloppyWeights=False):
 
 def compute_xgmm(points,kappa=0,backend=None,sloppyWeights=False):
     k=2
+    nsamp=5000
     muinit=np.array([points[i] for i in np.random.choice(len(points),k)])
     model=gmm(muinit,kappa)
     x=np.array(points)
     #sx=x
-    sx=np.array(model.samplePoints(x))
+    sx=np.array(model.samplePoints(x,nsamp))
     #profile.runctx("model.run_EM_MAP(x,backend=backend)",globals(),locals())
     model.run_EM_MAP(sx,backend=backend,sloppyWeights=sloppyWeights)
     oldBICevid=model.BICevid
+    count=0
     while(True):
+        count+=1
         print
+        print "Beginning xgmm cycle",count
         t0=time.time()
+        sx=np.array(model.samplePoints(x,nsamp))
+        model.evaluate(sx)
+        oldBICevid=model.BICevid
         oldk=model.k
-        model=model.improveStructure3(x,backend=backend)
+        model=model.improveStructure3(x,backend=backend,nSamp=500)
+        #model=model.improveStructure3(sx,backend=backend)
         t1=time.time()
         print "improve model time =",t1-t0
         print
@@ -677,12 +570,11 @@ def compute_xgmm(points,kappa=0,backend=None,sloppyWeights=False):
         print model.show()
         #sx=model.samplePoints(x)
         model.run_EM_MAP(np.array(sx),backend=backend)
-        model.evaluate(x)
+        model.evaluate(sx)
         print "BICevid/old=",model.BICevid,oldBICevid
         if(model.k==oldk):break
         print "full model EM time =",time.time()-t1
         print
         
-        oldBICevid=model.BICevid
     return model
 

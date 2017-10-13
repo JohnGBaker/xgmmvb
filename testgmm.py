@@ -107,7 +107,7 @@ for i in range(trials):
         start=time.time()
         niter=0
         #model=gmm.compute_gmm(points,2,0,pp)
-        model=gmm.compute_gmm(points,2,kappa=mdim-1,pp)
+        model=gmm.compute_gmm(points,2,mdim-1,pp)
         #model=gmm.compute_gmm(points,2,0,"screen")
         dtime=time.time()-start
         print "weights/centers:",zip(model.phi,model.mu)
@@ -123,7 +123,7 @@ for i in range(trials):
         start=time.time()
         niter=0
         #model=gmm.compute_xgmm(points,0,pp)
-        model=gmm.compute_xgmm(points,kappa=mdim-1)
+        model=gmm.compute_xgmm(points,mdim-1)
         dtime=time.time()-start
         print "Found",model.k," components"
         print "weights/centers:",zip(model.phi,model.mu)
