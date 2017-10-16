@@ -51,6 +51,7 @@ class gmm:
             self.lndetsigma[j]=lndet
         self.mu=np.copy(muinit)
         self.EMtol=0.01 
+        self.failed=False
         
     def show(self):
         print "Gaussian mixture model: ",self.k,"components"
@@ -181,7 +182,10 @@ class gmm:
         for j in activeComponents:
             self.phi[j]=np.mean(w[:,j])
         #Fix normalization:
-        phisum=np.sum(self.phi)
+        #phisum=np.sum(self.phi)
+        #print "phisum=",phisum
+        #print "altphisum=",np.sum(w)/len(points)
+        #print "activephisum=",sum([self.phi[j]for j in activeComponents])
         if(False):
             self.phi*=1.0/phisum
         elif(False):
@@ -190,7 +194,7 @@ class gmm:
                 #phiact'+(phisum-phiact)=1
                 #phiact'/phiact=1+(1-phisum)/phiact
                 self.phi[j]*=(1.0-phisum)/phiact+1.0
-            
+                
         n=len(points)
         for j in activeComponents:
             mu=np.zeros(self.dim)
@@ -221,9 +225,13 @@ class gmm:
                 #     -> 0.5(self.lndetsigma-lndetsigmamax)
                 #so expect convergence toward lndetsigma=lndetsigmamax
                 #also note that this is always *smaller* than with off=0
-            else: off=0
+            else: off=1e-10
             sigma=sigma + self.kappa*self.sigma[j]
-            sigma=sigma/(n*self.phi[j]+off)
+            sign,lndet=np.linalg.slogdet(sigma)
+            if(lndet>100):
+                off=math.exp(-(lndet-100.0)/self.dim)
+                print "lndet=",lndet,"  nphi=",n*self.phi[j]," off=",off
+            sigma=sigma/(n*self.phi[j]+off)            
             sign,lndet=np.linalg.slogdet(sigma)
             if(sign==1):
                 #here we slow the rate at which lndet sigma can change
@@ -238,6 +246,7 @@ class gmm:
                 print "Warning: Encountered pathological sigma for compt ",j
                 print " sigma=",sigma
                 print "npts=",len(points)
+
     def run_EM_MAP(self,x,activeComponents=None,backend=None,sloppyWeights=False,MaxSteps=800):
         lpost=-float('inf')
         #print "running EM"
@@ -245,13 +254,38 @@ class gmm:
         alpha0=[a for a in alpha]
         noskip=False
         print "active =",activeComponents
-        every=1
+        every=4
         for count in range(MaxSteps):
             #print "n=",count,activeComponents
             #print "calling maxStep"
+            #print "premax meansum w:",np.sum(w)/len(x)
             self.maximizationStep(x,w,activeComponents=activeComponents)
+            #possibly drop a dim:
+            if activeComponents is not None:
+                jlist=activeComponents
+            else:
+                jlist=range(self.k)
+            for j in jlist:
+                if self.phi[j] < 0.001/len(x):  #drop
+                    if(True):
+                        print "Empty component; bailing out!"
+                        self.failed=True
+                        self.evaluate(None)
+                        return
+                    if(False):
+                        print "Deleting empty component"
+                        activeComponents.remove(j)
+                        np.delete(w,j,0)
+                        np.delete(self.phi,j,0)
+                        np.delete(self.mu,j,0)
+                        np.delete(self.sigma,j,0)
+                        np.delete(self.invsigma,j,0)
+                        np.delete(self.lndetsigma,j,0)
+                        self.k-=1
+                        break
             #print "calling expStep"
             w,alpha=self.expectationStep(x,w,alpha,alpha0,activeComponents,sloppyWeights and not noskip)
+            #print "postexp meansum w:",np.sum(w)/len(x)
             lpostold=lpost
             lpost=self.lpost
             #print "phis=",self.phi
@@ -259,7 +293,10 @@ class gmm:
             if(False and activeComponents is not None):
                 for j in activeComponents: print " mu[",j,"]=",self.mu[j]
             #print count,"lpost=",lpost,"phi=",self.phi
-            if(count%every==0):print count,"lpost=",lpost
+            if(count%every==0):
+                print count,"lpost=",lpost
+                print count,"phi=",self.phi
+                print count,"lndet=",self.lndetsigma
             if(count/every>3):every*=2
             #print "mu1=",self.mu[1]
             if(backend is not None):
@@ -280,8 +317,12 @@ class gmm:
     def evaluate(self,x):
         #set lpost and BICevid
         #print "Evaluating model with "+str(self.k)+" components"
-        w,alpha=self.expectationStep(x)
-        self.BICevid=-self.BIC(alpha)/2.0
+        if(self.failed):
+            self.BICevid=float("-inf")
+            self.lpost=float("-inf")
+        else:
+            w,alpha=self.expectationStep(x)
+            self.BICevid=-self.BIC(alpha)/2.0
 
     def update(self,x):
         #set lpost and BICevid
@@ -340,14 +381,17 @@ class gmm:
             newmu=np.concatenate((model.mu,[x1]))
             newmu[j,:]=x0;
             #form new phi
+            #print "prenew phisum=",sum(model.phi)
             newphi=np.concatenate((model.phi,[0.5*model.phi[j]]))
             newphi[j]*=0.5;
+            #print "prenew phisum=",sum(newphi)
             #copy covariance to new cluster
             #newsigma=np.ma.concatenate((model.sigma[:j],[model.sigma[j],model.sigma[j]],model.sigma[j+1:]))
             newsigma=np.concatenate((model.sigma,[model.sigma[j]]))
             #print j,": mu=",newmu,"\n    sigma=",newsigma
             actives=active+[model.k]
             newmodel=gmm(newmu,model.kappa,newsigma,newphi)
+            #print "newmodel phisum=",sum(newmodel.phi)
             #tol-1 cycle
             newmodel.EMtol=EMtol*tolRelax
             newmodel.run_EM_MAP(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights)
@@ -356,6 +400,10 @@ class gmm:
             testmodel.run_EM_MAP(jpoints,activeComponents=active,sloppyWeights=sloppyWeights)
             #  compare new BIC to original clustering BIC [wrt all points]
             #tol-2 cycle
+            print "testmodel=",testmodel.show()
+            print "testmodel.BICevid=",testmodel.BICevid
+            print "newmodel=",newmodel.show()
+            print "newmodel.BICevid=",newmodel.BICevid
             if(newmodel.BICevid>testmodel.BICevid and testmodel.BICevid-newmodel.BICevid<EMtol*tolRelax**2):#This is a close call continue EM with orig EMtol
                 newmodel.EMtol=EMtol
                 testmodel.EMtol=EMtol
