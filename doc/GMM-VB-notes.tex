@@ -1,0 +1,829 @@
+\documentclass[aps,showpacs,twocolumn,prd,superscriptaddress,nofootinbib]{revtex4}
+
+\usepackage{amsmath}
+\usepackage{mathtools}
+%\usepackage{amsfonts}
+\usepackage{amssymb}
+%\usepackage{latexsym}
+\usepackage{graphicx}
+\usepackage{bm}
+\usepackage{color}
+\usepackage{enumerate}
+\usepackage{ulem}
+
+\newcommand{\be}{\begin{equation}}
+\newcommand{\ee}{\end{equation}}
+\newcommand{\ba}{\begin{align}}
+\newcommand{\ea}{\end{align}}
+\newcommand\ud{{\mathrm{d}}}
+\newcommand\uD{{\mathrm{D}}}
+\newcommand\calO{{\mathcal{O}}}
+\newcommand\bfx{\mathbf{x}}
+\newcommand{\ov}[1]{\overline{#1}}
+\newcommand{\ph}[1]{\phantom{#1}}
+\newcommand{\cte}{\mathrm{cte}}
+\newcommand{\nn}{\nonumber}
+\newcommand{\hatk}{\hat{k}}
+\newcommand{\Hz}{\,\mathrm{Hz}}
+\newcommand{\sinc}{\,\mathrm{sinc}}
+\newcommand{\Msol}{M_{\odot}}
+\newcommand{\E}[1]{{\mathbb E}_{#1}\!}
+
+\begin{document}
+
+\title{Notes on Clustering using Variational-Bayesian methods with a Gaussian Mixture Model.}
+
+\author{John G. Baker}
+\affiliation{Gravitational Astrophysics Laboratory, NASA Goddard Space Flight Center, 8800 Greenbelt Rd., Greenbelt, MD 20771, USA}
+
+\date{\today}
+
+\begin{abstract}
+
+This is just working notes so far.
+
+\end{abstract}
+
+\maketitle
+
+We are currently doing a lot of work with MCMC methods to sample from complicated astrophysical inference posterior distriubtions with relatively expensive likelihood step calculations.  In many cases we require many steps, say $10^8$ or more, to reliably sample these distributons, and the sampling is plagued by problems of slow discovery and mixing of disconnected high-posterior regions and poor acceptance rates, often below 10 percent.
+
+Our main tool for proposal-distirbutions is history-based differential evolution together with Gaussians over a fange of scales.  These are further aided by using a relatively thick stack of parallel temperature chains. The result is chains which are usually mostly successful at a variety of multimodal and odd-shaped distriubtions with 5-20 parameter dimensions, but a considerable cost. We would like techniques which are more efficient and/or more robust.
+
+Toward this we are targeting sampling efficiency improvements.  An issue is that the local shapes of the various high-posterior regions are not similar so that a proposal distribution useful in one region is likely to perform poorly in another.  It seems plausible that techniques similar to those we are employing now could be much more successful if they we adapted to be somehow applied independently in different regions of the parameter space.
+
+Toward this we have considered an approach which involves first clustering the chain history samples, then performing differential evolution steps specifically either on within-cluster or between clusters.  It seems plausible that this kind of approach could retain most of the benefits of differential evolution while achieving much higher sampling efficiency by avoiding poorly motivated proposals which would naturally be relevant for another region of the parameter space.
+
+But what kind of clustering would be appropriate?  First of all, it seems that it would be difficult to effectively pre-define the number of clusters as this number should depend on not only the details of the target distribution, but also the temperature of the sub-chain, and even the point of development of a maturing chain.  This would point to something like X-means over a simpler clustering algorithm like K-means.  But either of those has still has another problem.  They are optimal for clusters which are all the same size and shape.  In this way they may not be optimal for our purposes.  We really want ``clusters'' which are of independent sizes and shapes, and ideally which are covariantly describe, and ideally even independent of the parameterization used to define the random variable space. 
+
+These requirements tend to push away from a region-based clustering approach to one with overlapping clusters and some probablistic assignment of sample points to clusters.  That is, we should describe distribution of sample points as with a mixture model.  In particular a gaussian mixture model could be expected to do a fair job describing the distribution, and would provide a effective rationalization of distribution of sample points which could be applied to develop better proposals.  Such mixture models have a well-developed history and simple standard techniques, such as the expectation maximization (EM) algorithm, can be applied to find locally optimal best fit models for a moderately large point distribution.
+
+The EM algorithm is essentially a direct generalization of the simple and popular Lloyds algorithm common for K-means and has some of the same issues, particularly with the need watch out for significanly sub-optimal local optima. There can also be some stability issues to handle in the covariance-matrix fits for small clusters. We can select a number of clusters using a corresponding generalization of the X-means algorithm \cite{Xmeans}.
+
+We have implemented an effective X-means like extension of the EM algorithm for Gaussian mixture models with a arbitrary number of components. In addition to automatically (approximately) optimizing the number of components, the method also reduces exposure to poor local optima.  The general X-means idea is to start with the trivial case of just one cluster, then to consider dividing each cluster one at a time, and comparing the quality of fit by using the Bayesian information criterion, which can be thought of as a large-N limit approximation of the Bayesian evidence.  Only the trial cluster with the possible addition of a few significantly overlapping neighbors are considered for each of the split trials.  This improves efficiency and also tends to avoid exposure to poor local optima, since the issue is more severe when larger numbers of clusters are fit with poor initial configurations.  
+
+With a mixture model we are not just clustering the points, but we are effectively realizing an approximate model for the target distrubution over which we have good analytical control and which may be applied directly for approximate results of the original inference problem and/or for diagnositcs and tuning of the MCMC sampling process.  If we are a little more ambitious we are soon led not just to want a best fit model, but to have control of the distribution of possible mixture models within some family which provide an apporximate representation of the original distribution.
+
+\section{Variational Bayesian Gaussian Mixture Models}
+
+Informed by the foregoing considerations we realize to best meet our original objectives (and more) it is not so much a clustering algorithm that we want, but to replace the use of the sample history in the differential evolution method with an analytically tractable approximate distribution.
+
+Here we consider and approach to distribution modeling using variational bayesian techniques, based on the approach in \cite{Attias2000}.  To continue with minimal confusion, we will need some concrete notation to distinguish the various sorts of distributions involved in our problem. We begin with a Bayesian astrophysical inference posterior target distribution
+\be
+p(\theta_A|D_A,M_A)=\frac{p(D_A|\theta_A,M_a)p(\theta_A)}{p(D_A|M_A)},
+\ee
+with $\theta_A\in\Theta_A$ the parameter space of the astrophysical inference problem.
+From this, we wish to draw some set of samples $Y_\infty=\{\theta_{A\alpha}\}$ for parameter analysis and also perhaps to compute the marginal likelihood, or evidence $p(D_A|M_A)$.  On the asymptotic way there we will have a series of approximate sample sets $\{Y_n\}$ which we would like to drive toward improved consistency with $p(\theta_A|D_A,M_A)$ as efficiently as possible.
+
+\subsection{Gaussian Mixtures}
+
+As a tool for this we consider Gaussian mixture models which effectively describe an incremental sample set $Y\in\{Y_n\}$.  Disregard, for now the origin of $Y$; for this step we view these samples as the data, which we model as random variables taken from some unknown mixture of component Gaussians $\{C_j\}$.  The parameters describing the mixture distribution are $\{\kappa,\bm\theta\}=\{\kappa,\alpha_j,\bm\theta_j\}=\{\kappa,\alpha_j,\mu_j^a, \Gamma_{j\,ab}\}$ where $\kappa$ is the number of mixture components, $\alpha_j$ is the probability that any sample comes from component $C_j$ and $\bm\theta_j$ stands for the parameters of $C_j$ with mean $\mu_j^a$, and inverse covariance matrix $\Gamma_{j\,ab}$.
+
+Given such a model, to write down the likelihood of drawing a point $y_i^a\in\Theta_A$ we must also specify and unknown hidden parameter $z_i$ which assigns which component the data point was drawn from
+\begin{align}
+  %p(y_i^a|\bm\theta)&=\sum_{j=1}^\kappa{p(y_i^a,z_i{=}C_j|\bm\theta_j)}\\
+  p(y_i^a,z_i{=}C_j|\bm\theta_j)
+  &={p(z_i{=}C_j|\bm\theta)p(y_i^a|z_i{=}C_j,\bm\theta_j)}\nn\\
+  &={\alpha_j\mathcal{N}(y_i^a|\mu_j^a,\Gamma_{j\,ab})}\label{eq:GMM-like}
+\end{align}
+using the probability density function for the Gaussian (normal) distribution in the last line.  Note that $\sum_{j=1}^\kappa\alpha_j=1$ since each sample must be drawn from exactly one of the component distributions.
+
+Now we would like to infer $\bm\theta$ from the data. The posterior distribution for inferences about $\bm\theta$ is then
+\be
+p(\bm\theta,\bm Z|Y,\kappa)\propto\prod_{i=1}^Np(y_i^a,z_i|\bm\theta_j,\kappa)p(\bm\theta,\kappa)
+\ee
+where $\bm Z=\{z_i\}$ and $p(\bm\theta)$ is some appropriate prior on the mixture parameters.
+To make use of this we need to marginalize over $\bm Z$, summing over all the possible sets of component assignments using
+\begin{align}
+  \sum_Z f(\bm Z)&=\prod_{i=1}^N\left[\sum_{j=1}^\kappa\delta_{z_i{=}C_j}\right]f(Z),\\
+  \sum_Z f(z_i)&=\sum_{j=1}^\kappa\delta_{z_i{=}C_j}f(z_i).
+\end{align}
+    
+The second line follows from the first since $f(z_i)$ is independent of all other $z_{i'\neq i}$ and using $\sum_{j=1}^\kappa{\delta_{z_i{=}C_j}}=1$.
+
+For the posterior on the mixture parameters, for a set of independent data samples,
+\begin{align}
+  p(\bm\theta|Y,\kappa)&=\sum_{Z} p(\bm\theta,Z|Y,\kappa)\\
+  p(\bm\theta|Y,\kappa)&\propto\prod_{i=1}^N\left(\sum_{j=1}^\kappa{p(z_i{=}C_j|\bm\theta,\kappa)p(y_i^a|z_i{=}C_j,\bm\theta_j,\kappa)}\right)\nn\\
+  &\qquad\times p(\bm\theta,\kappa).
+\end{align}
+The log-posterior then involves a sum of logs of sums which cannot be explicitly integrated.  The EM algorithm provides a way to solve for the maximum \textit{a posteriori} parameters, variational Bayesian methods can provide a more direct yet tractable estimate of the posterior as a distribution.
+
+\subsection{Variational Bayesian Method}
+The trick to make a calculable estimate is to approximate the joint posterior, including the hidden parameters with an independently factored product distribution
+\be
+p(\bm\theta,Z|Y,\kappa)\approx q(\bm\theta,Z|\bm\eta,\bm\gamma)=q_\theta(\bm\theta|\bm\eta)q_Z(Z|\bm\gamma).
+\ee
+Where $\bm\eta$ and $\bm\gamma$ represent metaparameters for the model spaces for each of the factor spaces. We will instantiate these more specifically below.
+
+Then, following \cite{Attias2000}, we find the best approximate product distribution by optimizing an objective function based on the Kullback-Leibler divergence between the the two distributions:
+\begin{align}
+  F(\bm\eta,\bm\gamma|\kappa)&=\log p(Y|\kappa)-\mathbb{D}_{\mathrm{KL}}\left[q(\bm\theta,Z|\bm\eta,\bm\gamma)||p(\bm\theta,Z|Y,\kappa)\right]\nn\\
+  &=\log p(Y|\kappa)+\E{q(\bm\theta,Z|\bm\eta,\bm\gamma)}\left[\log\frac{p(\bm\theta,Z|Y,\kappa)}{q(\bm\theta,Z|\bm\eta,\bm\gamma)}\right]\nn\\
+  &=\E{q(\bm\theta,Z|\bm\eta,\bm\gamma)}\left[\log\frac{p(\bm\theta,Z,Y|\kappa)}{q_\theta(\bm\theta|\bm\eta)q_Z(Z|\bm\gamma)}\right].\label{eq:Fdef}
+\end{align}
+We leave it as understood that the model distributions $q(\cdot)$ will depend on $\kappa$.
+This function vanishes if the two distributions are identical, and is otherwise negative. We then optimize by requiring $\delta F/\delta q_\theta=\delta F/\delta q_Z=0$ which yields
+\begin{align}
+  q_\theta(\bm\theta|\bm\eta)&=c_\theta\exp\left(\E{q(Z|\bm\gamma)}\left[\log p(Y,Z|\bm\theta,\kappa)\right]\right)p(\bm\theta,\kappa)\label{eq:vbth}\\
+  q_Z(Z|\bm\gamma)&=c_Z\exp\left(\E{q(\bm\theta|\bm\eta)}\left[\log p(Y,Z|\bm\theta,\kappa)\right]\right),\label{eq:vbZ}
+\end{align}
+where $c_\theta$ and $c_Z$ are normalization constants. 
+
+Solving for $q(\bm\theta,Z)$ proceeds iteratively in a manner directly analogous to the expectation maximation algorithm.  The ``expectation'' step is transformed to solving \eqref{eq:vbZ} for $\bm\gamma$ and the ``maximization'' step transforms to solving \eqref{eq:vbth} for $\bm\eta$.  The solution proceeds by iteratively alternating these two steps.  With each step the model distribution $q(\bm\theta,Z)$ moves closer to $p(\bm\theta,Z|Y,\kappa)$ so the objective function, bound above by zero, should increase, and proceedure should converge to some local optimum.
+
+But so far we only have these expressions in abstract form. To realize these for a mixture model, we parameterize $q(Z|\bm\gamma)$ as
+\begin{align}
+q(Z|\bm\gamma)&=\prod_{i=1}^Nq(z_i|\bm\gamma)\\
+q(z_i|\bm\gamma)&=\sum_{j=1}^\kappa\delta_{z_i{=}C_j}\hat\gamma_{ij}.
+\end{align}
+This is normalized by requiring
+\begin{align}
+1&=\sum_{z_i=C_1}^{C_\kappa} q(z_i|\bm\gamma)\\
+1&=\sum_{z_i=C_1}^{C_\kappa}\sum_{j=1}^\kappa\delta_{z_i{=}C_j}\hat\gamma_{ij}.\\
+1&=\sum_{j=1}^\kappa\hat\gamma_{ij}.
+\end{align}
+
+With this notation, \eqref{eq:vbZ} reduces to
+\begin{align}
+\hat\gamma_{ij}&=\frac{\gamma_{ij}}{\bar\gamma_{i}}\label{eq:vbZmix}\\
+\bar\gamma_{i}&=\sum_{j=1}^\kappa{\gamma_{ij}}\nn\\
+\log\gamma_{ij}&=\E{q(\bm\theta|\bm\eta)}\left[\log p(y_i^a,z_i{=}C_j|\bm\theta,\kappa)\right]\nn
+\end{align}
+with
+\begin{align}
+  -\log c_Z = \sum_{i=1}^N\log\bar\gamma_i.
+\end{align}
+This quantity is the log-likelihood of the set of sample points averaged over the distribution of possible mixture models.
+
+\subsubsection{Expected values}
+
+With values for $\hat\gamma_{ij}$ expected values over the component partitions can be computed by
+\begin{align*}
+\E{q(Z|\bm\gamma)}\left[f(Z)\right]&=\sum_{Z}q(Z|\bm\gamma)f(Z)\nn\\
+&=\prod_{i=1}^N\left(\sum_{j=1}^k\delta_{z_i{=}C_j}\right)\nn\\
+&\qquad\times\prod_{i'=1}^N\left(\sum_{j'=1}^\kappa\delta_{z_{i'}{=}C_{j'}}\hat\gamma_{i'j'}\right)f(Z)\nn\\
+&=\prod_{i=1}^N\left(\sum_{j=1}^k\sum_{j'=1}^\kappa\delta_{z_i{=}C_j}\delta_{z_{i'}{=}C_{j'}}\hat\gamma_{i'j'}\right)f(Z)\nn\\
+&=\prod_{i=1}^N\left(\sum_{j=1}^k\delta_{z_i{=}C_j}\hat\gamma_{ij}\right)f(Z)
+\end{align*}
+
+Using this \eqref{eq:vbth} becomes
+\begin{align}
+  \log q_\theta(\bm\theta|\bm\eta)
+  &=\prod_{i=1}^N\left(\sum_{j=1}^k\delta_{z_i{=}C_j}\hat\gamma_{ij}\right)\nn\\
+  &\qquad\times\sum_{i'=1}^N\log p(y_{i'}^a,z_{i'}|\bm\theta,\kappa)\nn\\
+  &\qquad+\log p(\bm\theta,\kappa)+\mathrm{const}\nn\\
+  &=\sum_{i=1}^N\sum_{j=1}^k\hat\gamma_{ij}\log p(y_i^a,z_i{=}C_j|\bm\theta,\kappa)\nn\\
+  &\qquad+\log p(\bm\theta,\kappa)+\mathrm{const}.\label{eq:qthmix}
+\end{align}
+If we define the prior from the same family of distributions $p(\bm\theta)=q_\theta(\bm\theta|\bm\eta_0)$ and choose a family which is conjugate to the form of $p(y_i^a,z_i{=}C_j|\bm\theta)$ then we can guarantee a solution. For the Gaussian mixture model, this means that we need Wishart-Normal distributions (see Appendix) for each component and Dirichlet distributions for the component weights.
+
+So far we have restricted to consideration of models with an assumed number of components $\kappa$ as $q(\theta,Z,\kappa)=q(\theta,Z|\kappa)q(\kappa)$.  In many cases though we would like to consider this hoice as part of the model freedom, then we can extend the objective function to include this parameter as well,
+\begin{align*}
+  F[q(\bm\theta,Z,\kappa)]\mkern-100mu &\mkern100mu=\log p(Y)\nn\\
+  &\mkern100mu\qquad-\mathbb{D}_{\mathrm{KL}}\left[q(\bm\theta,Z,\kappa)||p(\bm\theta,Z,\kappa|Y)\right]\nn\\
+  %&=\log\left(\sum_{\kappa=1}^K p(Y,\kappa)p(\kappa)\right)\nn\\
+  &=\sum_{\kappa=1}^K\left[q(\kappa)\E{q(\bm\theta,Z|\kappa)}\left[\log\frac{p(\bm\theta,Z,\kappa,Y)p(\kappa)}{q(\bm\theta,Z|\kappa)q(\kappa)}\right]\right]\nn\\
+  &=\sum_{\kappa=1}^Kq(\kappa)\left[F(q(\bm\theta,Z)|\kappa)+\log\frac{p(\kappa)}{q(\kappa)}\right].
+\end{align*}
+Then in optimization we also set $\delta F/\delta q(\kappa)=0$ to get
+\begin{align*}
+    q(\kappa)\propto p(\kappa)e^{F(\bm\eta^*,\bm\gamma^*|\kappa)}
+\end{align*}
+where $F(\bm\eta^*,\bm\gamma^*|\kappa)$ is the value of the objective function with optimal metaparameters, as developed above, for given $\kappa$.
+
+To evaluate $F(\bm\eta^*,\bm\gamma^*|\kappa)$, note from \eqref{eq:Fdef} and \eqref{eq:vbth} that
+\begin{align}
+  \E{q(Z|\bm\gamma^*)}\left[\log p(Y,Z|\bm\theta,\kappa)\right]&=\log q_\theta(\bm\theta|\bm\eta^*,\kappa)-\log c_\theta^*
+\end{align}
+so that,
+\begin{align}
+  F(\bm\eta^*,\bm\gamma^*|\kappa)&=-\log c_\theta^* -\E{q(Z|\bm\gamma^*)}\left[\log q_Z(Z|\bm\gamma^*,\kappa)\right]\nn\\
+  &=-\prod_{i=1}^N\left(\sum_{j=1}^\kappa\delta_{z_i{=}C_j}\hat\gamma^*_{ij}\right)
+  \nn\\
+  &\qquad\times
+  \sum_{i'=1}^N\log\sum_{j'=1}^\kappa\delta_{z_i'{=}C_{j'}}\hat\gamma^*_{i'j'}
+  \nn\\
+  &\qquad-\log c_\theta^*\nn\\
+  &=-\sum_{i=1}^N\sum_{j=1}^\kappa\delta_{z_i{=}C_j}\hat\gamma^*_{ij}
+  \nn\\
+  &\qquad\times
+    \log\sum_{j'=1}^\kappa\delta_{z_i{=}C_{j'}}\hat\gamma^*_{ij'}
+  \nn\\
+  &\qquad-\log c_\theta^*
+  \nn\\
+  &=-\sum_{i=1}^N\sum_{j=1}^\kappa\hat\gamma^*_{ij}\log\hat\gamma^*_{ij}
+  \nn\\
+  &\qquad-\log c_\theta^*
+  \label{eq:Feval-th}
+  .
+\end{align}
+
+Note that first term relates to how the sample points are distributed between clusters.  Since each $0\leq\hat\gamma_{ij}\leq 1$, the first term (including the minus sign) is non-negative.  Its value is zero when each data point can only plausibly belong to a single cluster (each $\hat\gamma_{ij}\in\{0,1\}$).  Its value maximized at  $N\log\kappa$ with the circumstance that each data point is equally likely to belong to any component ($\hat\gamma_{ij}=1/\kappa$).
+
+Alternatively, we can compute the same quantity from \eqref{eq:vbZ},
+\begin{align}
+  F(\bm\eta^*,\bm\gamma^*|\kappa)&=-\log c_Z^*\nn\\
+  &\qquad-\E{q(\theta|\bm\eta^*)}\left[\log q_\theta(\theta|\bm\eta^*,\kappa)-\log p(\bm\theta|\kappa)\right]\label{eq:Feval-Z}
+\end{align}
+
+\subsection{Application to Gaussian Mixtures}
+
+For the Gaussian mixture model, then, we need
+\be
+q_\theta(\bm\theta|\bm\eta)=\mathcal{D}\left(\bm\alpha|\bm\lambda\right)\prod_{j=1}^\kappa\mathcal{NW}\left(\mu_j^a,\Gamma_{j\,ab}|\rho_j^a,\beta_j,V_{j\,ab},\nu_j\right).
+\ee
+Plugging this into \eqref{eq:vbZmix}, together with \eqref{eq:GMM-like}, and using \eqref{eq:ENWoflogN} and \eqref{eq:Elnalpha} from the Appendix, we get (with some shorthand)
+\begin{align}
+  \log \gamma_{ij}&=\E{\mathcal{D}}\left[\alpha_j\right]+\E{\mathcal{NW}}\left[\mathcal{N}(y_i^a|\mu_j^a,\Gamma_{j\,ab})\right]\nn\\
+  %&=\psi(\lambda_j)-\psi(\bar\lambda)+\ln\mathcal{N}\left(y_i^a|\rho_j^a,\nu_j V_{j\,ab}\right)\nn\\
+  %&\qquad+\frac12\left(-\frac D{\beta_j}+\psi_D\left(\frac{\nu_j}2\right)+D\ln\frac2{\nu_j} \right)\nn\\
+  &=
+  -\frac{\nu_j}2(y_i^a-\rho_j^a)V_{j\,ab}(y_i^b-\rho_j^b)+\psi(\lambda_j)-\psi(\bar\lambda)\nn\\
+  &\qquad
+  +\frac12\left(\ln|V_j|-\frac D{\beta_j}+\psi_D\left(\frac{\nu_j}2\right)-D\ln\pi \right)\label{eq:GM-parition}
+\end{align}
+which is found to agree with Eq.~(8) of \cite{Attias2000}, neglecting an irrelevant additive constant.
+
+We can also substantiate \eqref{eq:qthmix} using \eqref{eq:GMM-like}, then applying the Normal/Normal-Wishart conjugacy relation \eqref{eq:NormalDelta}
+\begin{align}
+  \ln q_\theta(\bm\theta|\bm\eta)
+  &=\sum_{i=1}^N\sum_{j=1}^k\hat\gamma_{ij}
+       {\left(\ln\alpha_j+\ln\mathcal{N}(y_i^a|\mu_j^a,\Gamma_{j\,ab})\right)}\nn\\
+       &\qquad+\log q(\bm\theta|\bm\eta_0)+\ln c_\theta\nn\\
+  &=\sum_{j=1}^\kappa\left(\sum_{i=1}^N\hat\gamma_{ij}
+       {\ln\mathcal{N}(y_i^a|\mu_j^a,\Gamma_{j\,ab})}\right.\nn\\
+       &\qquad+\left.\vphantom{\sum_{i=1}^N}
+       \ln\mathcal{NW}\left(\mu_j^a,\Gamma_{j\,ab}|\rho_{j0}^a,\beta_{j0},V_{j0\,ab},\nu_{j0}\right)\right)\nn\\
+       &\qquad+\ln\mathcal{D}\left(\bm\alpha|\bm\lambda_0\right)
+       +\sum_{j=1}^\kappa N_j\ln\alpha_j
+       +\ln c_\theta
+       \nn\\
+  &=\sum_{j=1}^\kappa\left(
+       \vphantom{\sum_{i=1}^N} 
+       \bm T_{\mathcal{NW}}(\mu_j^a,\Gamma_{j\,ab})\cdot
+       \vphantom{\frac12}\right.
+       \nn\\&\qquad
+       \left.
+       \left[\sum_{i=1}^N\hat\gamma_{ij}\bm\Delta(y_i^a)
+       +\bm\eta_{\mathcal{NW}}(\rho_{j0}^a,\beta_{j0},V_{j0\,ab},\nu_{j0})\right]
+       \vphantom{\sum_{i=1}^N}\right.       
+       \nn\\&\qquad
+       \left.
+       +\ln\alpha_j\left[\sum_{i=1}^N\hat\gamma_{ij} +\lambda_{j0}\right]
+       -A_{\mathcal{NW}}(\bm\eta_{j0})
+       \vphantom{\sum_{i=1}^N}\right)
+       \nn\\&\qquad
+       \vphantom{\frac12}
+       -ND\ln(2\pi)
+       -A_{\mathcal{D}}(\bm\eta_0)+\ln c_\theta
+       \nn\\
+  &=\sum_{j=1}^\kappa\ln\mathcal{NW}\left(\mu_j^a,\Gamma_{j\,ab}|\bm\eta'_{j}\right)\nn\\
+       &\qquad+\ln\mathcal{D}\left(\bm\alpha|\bm\lambda'\right).
+\end{align}
+[Need to check $ND->\frac\kappa2ND$]
+To get the last line we assume value of $c_\theta$ to normalize the distribution, and define the primed metaparameters via the expressions in square brackets.  Concretely, these assignments are
+\begin{align}
+  \ln c_\theta&=\sum_{j=1}^\kappa\left( A_{\mathcal{NW}}(\bm\eta_{j0})-A_{\mathcal{NW}}(\bm\eta'_{j})\right)
+  \nn\\&\qquad
+  +ND\ln(2\pi)+\ln\mathcal{D}\left(\bm\alpha|\bm\lambda_0\right)-\ln\mathcal{D}\left(\bm\alpha|\bm\lambda'\right)\label{eq:Cth}\\
+  \bm\eta_j'&=\sum_{i=1}^N\hat\gamma_{i,j}\bm\Delta(y_i^a)\nn
+\end{align}
+    [Need to check $ND->\frac\kappa2ND$]
+    where for completeness, and compactness we write the overall distribution in exponential form with,  $\bm\eta'=\{\bm\eta'_j\}$,
+\begin{align}
+  \bm\eta_j=
+  \begin{bmatrix}
+    V_j^{-1ab}+\beta_j\rho_j^a\rho_j^b\\[.7ex]
+    \nu_j-D\\[.7ex]
+    \beta_j\rho_j^a\\[.7ex]
+    \beta_j\\[.7ex]
+    \lambda_j
+  \end{bmatrix},\qquad
+\bm T_j=
+\begin{bmatrix}
+  -\frac12\Gamma_{j\,ab}\\[.7ex]
+  \frac12\ln\left|\Gamma_j\right|\\[.7ex]
+  \Gamma_{j\,ab}\mu_j^b\\[.7ex]
+  -\frac12\mu^a\Gamma_{j\,ab}\mu_j^b\\[.7ex]
+  \ln\alpha_j
+\end{bmatrix},\nn\\
+\begin{aligned}
+  h(\bm \theta)&=\exp\left(-\sum_{i=1}^\kappa\alpha_i\right)\nn\\
+  A(\bm\eta)&=\sum_{j=1}^\kappa A_c(\bm\eta_j)-\ln\Gamma(\bar\lambda(\bm\eta))\\
+  A_c(\bm\eta_j)&=A_{\mathcal{NW}}(\bm\theta_j)+\ln \Gamma(\lambda_j)\nn\\
+\end{aligned}
+\end{align}
+
+Using this notation, we update $\bm\eta_j$ with 
+\begin{align}
+  \bm\Delta(y_i^a)=
+  \begin{bmatrix}
+    y_i^ay_i^b\\[1ex]
+    1\\[1ex]
+    y_i^a\\[1ex]
+    1\\[1ex]
+    1
+  \end{bmatrix},\quad
+  \sum_{i=1}^N\hat\gamma_{ij}\bm \Delta(y_i^a)=
+  \begin{bmatrix}
+    \sum_{i=1}^N\hat\gamma_{ij}y_i^ay_i^b\\[.7ex]
+    N_j\\[.7ex]
+    \sum_{i=1}^N\hat\gamma_{ij}y_i^a\\[1ex]
+    N_j\\[1ex]
+    N_j
+  \end{bmatrix}
+\end{align}
+where $N_j=\sum_{i=1}^N\hat\gamma_{ij}$.
+
+
+
+We can also expand the $\bm\eta$-update expressions in terms of the conventional variables, 
+\begin{align}
+  V_j'^{-1ab}+\beta_j'\rho_j'^a\rho_j'^b
+  &=  V_{j0}^{-1ab}+\beta_{j0}\rho_{j0}^a\rho_{j0}^b
+  \nn\\&\qquad
+  +\sum_{i=1}^N\hat\gamma_{ij}y_i^ay_i^b 
+  \nn\\
+  \nu_j'
+  &=\nu_{j0}
+    +\sum_{i=1}^N\hat\gamma_{ij}
+  \nn\\
+  \beta_j'\rho_j'^a
+  &=  \beta_{j0}\rho_{j0}^a+\sum_{i=1}^N\hat\gamma_{ij}y_i^a 
+  \nn\\
+  \beta_j'
+  &=
+  \beta_{j0}+\sum_{i=1}^N\hat\gamma_{ij}
+  \nn\\
+  \lambda'_{j}&=
+  \lambda_{j0}+\sum_{i=1}^N\hat\gamma_{ij}.\label{eq:meta-update}
+\end{align}
+yielding a result which agrees with Eq.~10 of\cite{Attias2000}, but for our purposes, it will usually be more convenient to work with the natural variable $\bm\eta$.
+
+
+If we allow $\kappa$ to vary, we can evaluate models using \eqref{eq:Feval-th} together with the explicit value of $c_\theta$ from \eqref{eq:Cth} after driving to convergence to achieve metaparameters $\bm\gamma^*$ and $\bm\eta^*$:
+\begin{align}
+    F(\bm\eta^*,\bm\gamma^*|\kappa)&=
+    -\sum_{i=1}^N\sum_{j=1}^k\hat\gamma^*_{ij}\log\hat\gamma^*_{ij}
+    +A(\bm\eta^*)-A(\bm\eta_{0})
+  \nn\\&\qquad
+  -ND\ln(2\pi)
+\end{align}
+
+[Need to check $ND->\frac\kappa2ND$]
+We can also compute from \eqref{eq:Feval-Z} using \eqref{eq:ElnNW} and \eqref{eq:ElnD}
+
+\subsection{The posterior predictive}
+
+An advantage of differential-Bayesian Gaussian mixture models for clustering is that it allows for clear statisitical applications of the results.  A particular application of this which maybe useful for developing proposal distribution is the opportunity to make strightforward statistical predictions for new draws in the astrophysical distribution, statistical understanding of the possible Gaussian mixtures fitting the existing sample set.  First, consider the scope of models with fixed $\kappa$. Then
+\begin{align}
+  p(y^a|Y,\kappa)&=\int{d\bm\alpha}\, p(\bm\alpha|Y)\sum_{j=1}^\kappa \alpha_j\int{d\bm\theta_j p(y^a|\theta_j)p(\theta_j,|Y)}\nn\\
+  &\mkern-45mu\approx \sum_{j=1}^\kappa \E{q^*(\bm\alpha)}\left[\alpha_j\right]\E{q^*(\theta_j)}\left[p(y^a|\theta_j)\right]\nn\\
+  &\mkern-45mu= \sum_{j=1}^\kappa \frac{\lambda^*_j}{\bar\lambda^*}\exp\left[A_{\mathcal{NW}}(\bm\eta^*_j+\bm\Delta_{\mathcal{N}}(y^a))-A_{\mathcal{NW}}(\bm\eta^*_j)\right]\nn\\
+  &\mkern-45mu=\sum_{j=1}^\kappa \frac{\lambda^*_j}{\bar\lambda^*}\exp\left[ t_{{\nu_j+1-D}}\!\left(y^a\big|\rho_j^a,\frac{1+1/\beta_j}{(1+\nu_j-D)}V_j^{-1\,ab}\right)\right]
+\end{align}
+In the last line we use \eqref{eq:norm-predictive} to find that the resulting distribution is a weighted sum of $t$-distributions.
+
+\section{X-GMM}
+
+While variational Bayesian iterative algorithm should converge to a local optimum, there remain the issues that the algorithm may get stuck in a local optimum, far from the global optimum.  Overcoming this explicitly can mean running the algorithm multiple times with different initial guesses for the meta-parameters.  And when there is no strong prior on the number of clusters, it can be very expensive to run the alrogithm over a large range of trials for the number of cluster $\kappa$.
+
+We can ameliorate both of these issues, however by applying a variant of the X-means, algorithm, which was originally developed as an generalization of K-means when the number of centers is unknown.  The X-means algorithm begins with just two centers (where sensitivity to initial center locations is much reduced, and progressively tests whether it is advantagous to split one of the resulting clusters in two.  The test applies the Bayesian information criterion (BIC) as a rough estimator for whether a split is preferred. Each such test is relatively fast because only the sample points belonging to that cluster are updated.  After each cluster is tested for division, the K-means is re-run on the whole set.
+
+We have developed a generalization of this algorithm for mixture models.  The problem is made more a little more complicated by the fact that each point belongs, at some level to all components.  In practice however, the overlap of most pairs of components will usually be quite small.  In our gaussian mixture model variant, at the split-testing stage, we again loop over every component to test splitting.  For each component though, we first test which, if any, of the other components overlap non-negligibly with the targeted component.  We compute the weight the points belonging non-negligibly to any of the overlapping subset of components.  The summed subset weight are then fixed in a weighted version of the E-M algorithm beginning from a split of the target component, and though which only the overlapping component subset parameters and their relative weights are evolved.  The trail can again tested via the BIC. We find promising and relatively efficient results for using this approach with moderate numbers of sample points (thousands). If a split is preferred, it is immediately applied before the next component is tested.  Once all the components (that we present at the start of this stage of process) have been tested, then the E-M algorithm is again run on the full set. The process continues until there is no significant improvment.
+
+We will follow an analogous approach for a variational-Bayesian mixture model treatment.  Initially we begin with just two equal-weight component with randomly draw means and unit covariances.  These are optimized through the variational-Bayesian generalization of the E-M algorithm. Following the notation of \cite{PellegMoore2000} this is the  ``Improve-Params'' stage.
+
+Next, for the ``Improve-Structure'' stage we begin with a list of all components as of the beginning of this stage.  For each of these we perform a split trial.
+
+Label the component being tried as $C_s$.  The first step is to identify the set $J$ of all components which significantly overlap with $C_s$.  Concretely, we define overlap by,
+\begin{align}
+  \chi_{sj}&=\sum_{i=1}^N\hat\gamma_{is}\hat\gamma_{ij}/N_s.
+\end{align}
+Note first that $\chi_{sj}$, like each term in the sum non-negative.  Also note that normalization requires $\sum_{j=1}^\kappa\chi_{sj}=1$, so that the set $\{\chi_{sj}\}$ for specified $s$ provides a kind of partner partitioning among all the potentially overlapping components.  The upper limit value will be approached at $\chi_{ss}\approx1$ when there is negligible probability that any of the samples which might apply to component $s$ could be derived from any other component. We can specify the set of significantly overlapping components as those with overlap exceeding some small cutoff value $j\in J$ iff $\chi_{sj}>\chi_0$.
+
+Next we propose a split of the $s$ component, temporarily replacing it with two new components.  To initialize the new components we draw a random sample $x^a$ from the $s$-component distribution. Then we set new components with parameters:
+\begin{align}
+  \rho^a_{s\pm}=\rho^a_s\pm(x^a-\rho^a_{s}\nn\\
+  V_{s\pm\,ab}=\frac{2\nu_s}{\nu_s+\nu_0}V_{s\,ab}\nn\\
+  \lambda_{s\pm}=\frac12(\lambda_s+\lambda_0)\nn\\
+  \beta_{s\pm}=\frac12(\beta_s+\beta_0)\nn\\
+  \nu_{s\pm}=\frac12(\nu_s+\nu_0)
+\end{align}
+Denote the new set overlapping subset of components $J'$ and its complement in the full set $\bar J$.
+
+Next we proceed with a contrained optimization in which only the partitioning for the $J^+$
+the set of components which are allowed to vary.  Holding the partitioning of points among the $\bar J$ components constant means that the $\hat\gamma_{ij\in \bar J}$ are each constant, as are their pointwise sums $\sum_{\bar J}\hat\gamma_{ij}=$const. Normalization then also requires that the sum within the evolved set $G_i=\sum_{J^+}\hat\gamma_{ij}$ is also preserved.  To realize normalization in this context then,
+\begin{align}
+  \hat\gamma_{ij}&=\gamma_{ij}\frac{g_i}{\bar\gamma_{iJ^+}};j\in J^+\nn\\
+  \hat\gamma_{ij}&=\gamma_{ij}\frac{1-g_i}{\bar\gamma_{i\bar J}};j\in \bar J\nn\\
+  \bar\gamma_{iJ^+}&=\sum_{j\in J^+}\gamma_{ij}\nn\\
+  \bar\gamma_{i\bar J}&=\sum_{j\in \bar J}\gamma_{ij}\nn
+\end{align}
+where we understand $\gamma_{ij}$ to depend on the metaparameters $\bm\lambda$.  For the frozen components, however, examination of \eqref{eq:meta-update} shows that the associated metaparameters for $j\in\bar J$ will also remain fixed during the update.  Note however from \eqref{eq:GM-partition} that $\gamma_{ij}$ for the frozen components may vary as $\gamma'_{ij}=\exp(\psi(\bar\lambda)-\psi(\bar\lambda'))\gamma_{ij}$.  This is a uniform rescaling for the $\gamma_{ij}$ of all frozen components meaning in particular that each $\bar\gamma_{i\bar J}'=\exp(\psi(\bar\lambda)-\psi(\bar\lambda'))\bar\gamma_{i\bar J}$. There will be no need for a (relatively expensive) recomputation of the $\gamma_{ij}$ corresponding to the frozen components.
+
+Except for the normalization of the $\hat\gamma_{ij}$ the optimization of the parameters corresponding to the expanded overlapping subset $J^+$ proceeds as before, with the variational Bayesian expectation-maximization algorithm.  Upon convergence, we then compare the $J$ and $J^+$ models.
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+\section{Some properties of relevant probability distributions.}
+Our clustering parameter distribution model is built from some well-known distributions within the extensive exponential family. In this appendix we review some properties of distributions in this family and specific results for the distrubtions needed above.
+
+\subsection{The exponential family}
+For these, the log of the probability density function $p(\bm x|\bm \theta)$ can written as an inner product of two vectors separately depending on the parameters $\bm\theta$ and the random variables $\bm x$,
+\begin{align}
+p(\bm x|\bm \theta)
+&= h(\bm x)\exp{\left( {\bm \eta}({\bm\theta}) \cdot \bm T(\bm x) -A(\bm\theta)\right)}\\
+&= \exp{\left( \bm{\tilde\eta}(\bm\theta) \cdot \bm{\tilde T}(\bm x) \right)}.
+\end{align}
+
+The components of $\bm\eta$ are referred to as ``natural parameters'' and some calculations are simpler in terms of them, rather than the $\bm\theta$ components.  The $\bm T(\bm x)$ are referred to as ``sufficient statistics'' as they are all we need to know about the set of random variables $\bm x$ for many purposes, and $A(\bm\theta)$ is the log-partition function. 
+
+The first form above for the PDF is common, {\it i.e.} on
+{\it Wikipedia}, but the second form is more elegant.  To relate
+these, suppose that vector $\bm\eta$ has $s$ components
+$\bm\eta={\eta_1,\ldots,\eta_s}$ similar for $\bm T$.  For the
+second form we supplement this with new components representing
+$h({\bm x})$ and $A({\bm\theta})$. Specifically, let
+$\bm{\tilde\eta}={\eta_0,\eta_1,\ldots,\eta_{s+1}}$ and similar
+for $\tilde T$, then set $\eta_0=-A(\bm\theta)$,
+$T_0=1$,$\eta_{s+1}=1$,$T_{s+1}=\ln{h(\bm x)}$.  Note that the
+form of this expresion is preserved under changes of variables for
+either $\bm x$, though often with appropriate choices one can find
+$h(\bm x)=1$ trivializing the $s+1$ component of $\bm{\tilde  T}$.
+
+The exponential family including a long list of popular distributions
+for statistical modeling including, those we need, the Dirichlet,
+Gaussian and Wishart distributions, but also many others, such as the
+exponenial, Poisson, Pareto, binomial and gamma distributions.  These
+exponential-family distributions are useful for us particularly
+because they have and comprise conjugate priors, meaning the posterior
+and priors are in the same family with updated parameters.
+
+\subsubsection{Expected values}
+
+The key part of what makes these expected values for specific
+combinations of the random variables can be easily computed
+analytically.  
+Consider the normalization of the PDF using natural parameters,
+%
+\begin{align}
+1&=\int{\mathrm dx\, h(\bm x)\exp{\left( \bm\eta \cdot \bm T(\bm x) - A(\bm\eta) \right) } }\\
+    e^{A({\bm\eta})}&=\int{\mathrm dx\, h(\bm x)\exp{\left( \bm\eta \cdot \bm T(\bm x)\right)}}
+\end{align}
+%
+then take an arbitrary number of derivatives of each side and multiply by $e^A$, for instance
+\begin{align*}
+  e^{ A({\bm\eta})}\frac{\partial^n}{\partial \eta_i^n}\frac{\partial^n}{\partial \eta_j^m}e^{A({\bm\eta})}
+  &=\int{\mathrm dx\, p(\bm x|\bm \theta) T_i(\bm x)^nT_j(\bm x)^m }\nonumber\\
+  &=\E{}\left[ T_i(\bm x)^nT_j(\bm x)^m\right].
+\end{align*}
+
+Thus we can compute any moments of the sufficient statistics. Specfically, for the first moment, the expected values of the sufficient statistics themselves, after changing back to the original parameters, are
+\begin{align}
+\E{} \left[ T_i(\bm x) \right]
+&=
+\frac{\partial\bm\theta}{\partial\eta_i}
+\cdot\frac{\partial}{\partial \bm\theta} A(\bm\theta).
+\end{align}
+%
+
+Furthermore, since we can compute expected values for all powers of the sufficient statistics, we can also compute any power series of them.  In particular, as long as $A(\bm\eta)$ is analytic over the relevant region, we can compute
+\be
+\E{}\left[\exp T_i(\bm x)\right]=\exp\left(A(\bm\eta|\eta_i\rightarrow\eta_i+1)-A(\bm\eta)\right)
+\label{eq:EeT}
+\ee
+
+
+Building on this, we can also compute the expecation value of the log of the PDF
+\begin{align}
+    {\E\,}_{\bm\eta}[\ln{p(\bm x|\bm \eta')}]
+    &={\E\,}_{\bm\eta}[\ln{h(\bm x)}+\bm\eta' \cdot \bm T(\bm x) -A({\bm\eta'})]\nonumber\\
+    &={\E\,}_{\bm\eta}[\ln{h(\bm x)}]+\bm\eta' \cdot {\E\,}_{\bm\eta}[\bm T(\bm x)] -A({\bm\eta')}\nonumber\\
+    &={\E\,}_{\bm\eta}[\ln{h(\bm x)}]+\bm\eta' \cdot \frac{\partial A(\bm\eta)}{\partial\bm\eta} -A({\bm\eta'})
+\end{align}
+where the log PDF in the argument may be any member of the same family, not necessarily with the same parameters as the distribution against which the expected values are computed. As long as it is possible to express $\ln h(\bm x)$ linearly in moments of the suficient stastitics, this will be straightforward to compute.  In many cases $\ln h(x)$=const so this is trivial.  When $\bm\eta'=\bm\eta$ the other two terms amount to the negative of the log-partition with the linear prt removed.
+
+\subsubsection{Conjugacy}
+
+Another very important property of subfamilies of distributions within the exponential family is that they have conjugate distribution families. These are useful for characterizing prior and posterior information in Bayesian statistics.  The basic idea is that if the prior is of the conjugate family to the likelihood, then the posterior distribution will belong to the same conjugate family. Writing out Bayes therorem,
+\begin{align}
+  \ln p_P(\bm\theta|\bm x) = \ln p_L(\bm x|\bm\theta) + \ln p_0(\bm\theta) + f(\bm x),
+\end{align}
+suppose that these distributions can be put in the exponentional form, with the posterior/prior family labeled by $P$ and the likelihood family labeled by $L$.
+
+For congujacy to apply, first of all we need that the parameters $\bm\theta$ for the likelihood family are the same as the random variables of the posterior/prior family. Then, writing Bayes theroem in exponential form, (and assuming $h(\bm x)=1$ for simplicity) we have
+\begin{align}
+  \bm\eta'_P\cdot\bm T_P(\bm\theta) - A_P(\bm\eta'_P)
+  &= \bm\eta_L(\bm\theta)\cdot\bm T_L(\bm x) - A_L(\bm\eta_L(\bm\theta))\nn\\
+  &\qquad+\bm\eta_{P0}\cdot\bm T_P(\bm\theta) - A_P(\bm\eta_{P0})\nn\\
+  &\qquad+ f(\bm x).
+\end{align}
+To realize this we must next ensure that each component of $\bm\eta_L(\bm\theta)$ as well as each non-constant term in $A(\bm\eta_L(\bm\theta))$ appears as one of the components of $\bm T_P(\bm\theta)$.  We can make this concrete by requiring
+\begin{align}
+  \bm\eta_L(\bm\theta)\cdot\bm T_L(\bm x) - A_L(\bm\eta_L(\bm\theta))
+  &=\bm\Delta_L(\bm x)\cdot\bm T_P(\bm\theta) - A_{L0}
+\end{align}
+for all $\bm\theta$, and with some $\bm\Delta_L(\bm x)$ as needed, and where $A_{L0}$ is and remaining term in $A_L(\bm\theta)$ which is independent of $\bm\theta$. 
+
+In fact, this effectively provides a constructive prescription for defining the conjugate family.  Once the set of $\bm T_p$ components is determined, as above, and the corresponding exponential form is written out, then the partitioning function $A(\bm\eta_P)$ is determined by the normalization of the distribution. 
+
+Putting this all together, Bayes theroem becomes
+\begin{align}
+  \bm\eta'_P\cdot\bm T_P(\bm\theta) - A_P(\bm\eta'_P)
+  &=\left(\bm\eta_{P0}+\bm\Delta_L(\bm x)\right)\cdot\bm T_P(\bm\theta)\nn\\
+    &\qquad - A_P(\bm\eta_{P0})- A_{L0} + f(\bm x).
+\end{align}
+This implies the crucial result that $\bm\eta'_P=\bm\eta_{P0}+\bm\Delta_L(\bm x)$, with the rest of the normalizing terms automatically work out to just what is needed to normalize each side.
+
+The interpretation of this, for the Bayesian problem is that, we assume before making observations $\bm x$ that our prior beliefs about the parameters $\bm\theta$ were described by the metaparameters $\bm\eta_{P0}$ of the congujate distribution family.  After applying Bayes theorem with observations $\bm x$ rational posterior beliefs are characterized by metaparameters $\bm\eta'_{P}=\bm\eta_{P0}+\bm\Delta(\bm x)$ of the same family.  Bayesian inference is reduced to computing $\bm\Delta(\bm x)$ and additively updating the metaparameters.
+
+\subsubsection{Posterior predictive}
+
+If we have some exponential model $p_P(\bm\theta|\bm\eta_P)$ for the parameters describing some exponential event likelihood $p_L(x|\bm\theta)$, then, given our knowledge (encoded by $\eta_P$) of the parameter distribution we can marginalize the likelihood to get the model likelihood of some event.  If the model is already informed by some previous observations, as in the last section, then this is called the posterior predictive for the (new) event.
+
+In exponential form, using results from the last subsection, the marginalization can be computed explicitly.
+\begin{align}
+  p(x|\bm\eta)&=\int_{\bm\theta}p(x|\bm\theta)p(\bm\theta|\bm\eta)\nn\\
+  &=\int_{\bm\theta}h_L(x)h_P(\bm\theta)\exp\left((\bm\eta+\bm\Delta(x))\cdot\bm T(\bm\theta)-A_P(\bm\eta)-A_{L0}\right)\nn\\
+  &=h_L(x)\exp\left(A_P(\bm\eta+\bm\Delta(x))-A_P(\bm\eta)\right)\label{eq:exp-predictive}
+\end{align}
+where, in the last line we have relied on the normalization of $p_P(\bm\theta|\bm\eta+\bm\Delta(x))$. This last form provides an explicit result for the posterior predictive density, though we not that this is no longer in exponential form. As an example, the posterior predictive distribution for Gaussian likelihoods with unknown covariance will be a multivariate $t$-distribution.
+
+\subsection{Gaussians}
+For $D$-dimensional multivariate Gaussians $\mathcal{N}(x|\bm\theta)$ with $\bm\theta={\mu^a,\Gamma_{ab}}$, written here in terms of the precision matrix $\Gamma_{ab}$ we can put the PDF into the exponential form by setting:
+%\begin[{align}
+\begin{equation}
+\bm\eta=
+\begin{bmatrix}
+  \Gamma_{ab}\mu^b\\
+  -\frac12\Gamma_{ab}
+\end{bmatrix},\qquad
+\bm T=
+\begin{bmatrix}
+  x^a\\
+  x^ax^b
+\end{bmatrix}\label{eq:Normalexp}
+\end{equation}
+and
+\begin{align}
+h(\bm x)&=1\nn\\
+A(\bm\theta)&=\frac12\left(\mu^a\Gamma_{ab}\mu^b-\ln|\Gamma|-D\ln(2\pi)\right)\label{eq:NormalAth}\\
+A(\bm\eta)&=-\frac14\eta_{1a}\eta_2^{-1ab}\eta_1{b}-\frac12\ln\left|{-\eta_2}\right|-\frac D2\ln\pi\nn
+\end{align}
+Then, 
+\begin{align*}
+\E{}\left[ 
+\begin{bmatrix}
+  x^a\\
+  x^ax^b
+\end{bmatrix}
+\right]
+&=
+\begin{bmatrix}
+  \frac{\partial A}{\partial\eta_{1a}}\\[.7ex]
+  \frac{\partial A}{\partial\eta_{2ab}}
+\end{bmatrix}\nn\\
+&=
+\begin{bmatrix}
+-\frac12\eta_{2}^{-1ab}\eta_{1b}\\[.7ex]
+\frac14\eta_{1c}\eta_{2}^{-1ac}\eta_{1d}\eta_{2}^{-1bd}-\frac12\eta_{2}^{-1ab}\\  
+\end{bmatrix}\nn\\
+&=
+\begin{bmatrix}
+\mu^a\\[.7ex]
+\mu^a\mu^b+\Sigma^{ab}
+\end{bmatrix}\nn
+\end{align*}
+
+\subsection{Wishart}
+The Wishart (``wish-art'') distribution is a natural family for $D$-dimensional symmetric non-negative definite random matrices, with a varying degree of uncertainty. We denote its PDF as $\mathcal{W}(X_{ab}|V_{ab},\nu)$. The distribution can be put into exponential form by setting:
+\begin{align*}
+  \bm\eta=
+\begin{bmatrix}
+  -\frac12V^{-1}_{ab}\\[.7ex]
+  \frac{\nu-D-1}2
+\end{bmatrix},\qquad
+\bm T=
+\begin{bmatrix}
+  X_{ab}\\[.7ex]
+  \ln\left|X\right|
+\end{bmatrix}
+\end{align*}
+and
+\begin{align*}
+h(\bm x)&=1\\
+A(\bm\theta)&=\frac\nu2\left(\ln|V|+D\ln2\right)+\ln \Gamma_D\left(\frac\nu2\right)\\
+A(\bm\eta)&=-\!\left(\eta_2+\frac{D+1}2\right)\ln\left|{-{\eta_1}^{ab}}\right|+\ln \Gamma_D\left(\eta_2+\frac{D+1}2\right)
+\end{align*}
+Here $\Gamma_D$ is the so-called multivariate Gamma function
+\be
+\Gamma_D\left(x\right)=\pi^{(D-1)D/2}\prod_{j=1}^D{\Gamma\left(\frac{2x+1-j}2\right)}. 
+\ee
+We will also use the corresponding multivariate digamma function
+\begin{align}
+\psi_D\left(x\right)&=\frac\partial{\partial x}\ln\Gamma_D\left(x\right)\\
+&=\sum_{j=1}^D{\psi\left(\frac{2n+1-j}2\right)}. 
+\end{align}
+built from the standard digamma function $\psi(x)=\partial_x\ln\Gamma(x)$.
+
+Note also that the specific form of $h(\bm x)$ will depend on how the matrix $X_{ab}$ is vectorized $\bm x=\vec(X_{ab})$.  Once we have the distribution in exponential form, however, we never need to specifically perform any integral computations.
+
+Expected values for the sufficient statistics are
+\begin{eqnarray*}
+\E{}\left[ 
+\begin{bmatrix}
+  X_{ab}\\[.7ex]
+  \ln\left|X\right|
+\end{bmatrix}
+\right]
+&=&
+\begin{bmatrix}
+  \frac{\partial A}{\partial\eta_{1ab}}\\[.7ex]
+  \frac{\partial A}{\partial\eta_{2}}  
+\end{bmatrix}\\
+&=&
+\begin{bmatrix}
+-\left(\eta_2+\frac{D+1}2\right){\eta_1}^{-1}_{ab}\\[.7ex]
+-\ln\left|{-{\eta_1}^{ab}}\right|+\psi_D\left(\eta_2+\frac{D+1}2\right).
+\end{bmatrix}\\
+&=&
+\begin{bmatrix}
+  \nu V_{ab}\\[0ex]
+  \ln|V|+D\ln2+\psi_D\left(\frac\nu2\right)
+\end{bmatrix}
+\end{eqnarray*}
+
+\subsection{Normal-Wishart}
+For multivariate Gaussian likelihoods with unknown mean $\mu^a$ and unknown precision matrix $\Gamma_{ab}$ a the conjugate prior family is the normal-Wishart distributions, a combination of Wishart for the precision matrix and normal (scaled off the precision matrix) for the mean. For the resulting PDF
+\begin{equation}
+\mathcal{NW}(\mu^a,\Gamma_{ab}|\rho^a,\beta,V_{ab},\nu)=\mathcal{W}(\Gamma_{ab}|V_{ab},\nu)\mathcal{N}(\mu^a|\rho^a,\beta \Gamma_{ab}).
+\end{equation}
+In exponential form:
+
+\begin{align}
+  \bm\eta=
+\begin{bmatrix}
+  -\frac12\left(V^{-1ab}+\beta\rho^a\rho^b\right)\\[.7ex]
+  \frac12(\nu-D)\\[.7ex]
+  \beta\rho^a\\[.7ex]
+  -\frac12\beta
+\end{bmatrix},\qquad
+\bm T=
+\begin{bmatrix}
+  \Gamma_{ab}\\[.7ex]
+  \ln\left|\Gamma\right|\\[.7ex]
+  \Gamma_{ab}\mu^b\\[.7ex]
+  \mu^a\Gamma_{ab}\mu^b
+\end{bmatrix}\label{eq:NWexp}
+\end{align}
+and
+\begin{align*}
+h(\bm x)&=1\\
+A(\bm\theta)&=\frac\nu2\left(\ln|V|+D\ln2\right)+\ln \Gamma_D\left(\frac\nu2\right)-\frac D2\ln\frac\beta{2\pi}\\
+  A(\bm\eta)&=
+      {-\!}\left(\eta_2+\frac{D}2\right)\ln\left|-\eta_1^{ab}+\frac1{4\eta_4}\eta_3^a\eta_3^b\right|\\
+     &\qquad+\ln \Gamma_D\left(\eta_2+\frac{D}2\right)-\frac D2\ln\frac{\eta_4}{-\pi}\;.
+\end{align*}
+
+Expected values for the sufficient statistics are
+\begin{align*}
+\E{}\left[ 
+\begin{bmatrix}
+  \Gamma_{ab}\\[.7ex]
+  \ln\left|\Gamma\right|\\[.7ex]
+  \Gamma_{ab}\mu^b\\[.7ex]
+  \mu^a\Gamma_{ab}\mu^b
+\end{bmatrix}
+\right]
+&=
+\begin{bmatrix}
+  \frac{\partial A}{\partial\eta_{1ab}}\\[.7ex]
+  \frac{\partial A}{\partial\eta_{2}}  \\[.7ex]
+  \frac{\partial A}{\partial\eta_{3}^a}\\[.7ex]
+  \frac{\partial A}{\partial\eta_{4}}  
+\end{bmatrix}\nn\\
+&\mkern-25mu=
+\begin{bmatrix}
+      \frac{2\eta_2+D}2\left[-\eta_1^{ab}+\frac1{4\eta_4}\eta_3^a\eta_3^b\right]^{-1}\\[1ex]
+      -\ln\left|-\eta_1^{ab}+\frac1{4\eta_4}\eta_3^a\eta_3^b\right|+\psi_D\left(\eta_2+\frac{D}2\right)\\[1ex]
+      -\frac{\eta_3^b}{2\eta_4}\frac{2\eta_2+D}2\left[-\eta_1^{ab}+\frac1{4\eta_4}\eta_3^a\eta_3^b\right]^{-1}\\[1ex]
+        \frac{\eta_3^a\eta_3^b}{4\eta_4^2}\frac{2\eta_2+D}2\left[-\eta_1^{ab}+\frac1{4\eta_4}\eta_3^a\eta_3^b\right]^{-1}-\frac D{2\eta_4}
+\end{bmatrix}\\
+&\mkern-25mu=
+\begin{bmatrix}
+      {\nu}V_{ab}\\[1ex]
+      \ln\left|V\right|+\psi_D\left(\frac\nu2\right)+D\ln2\\[1ex]
+      \nu V_{ab}\rho^b\\[1ex]
+      \nu V_{ab}\rho^a\rho^b+\frac D\beta
+\end{bmatrix}
+\end{align*}
+
+It will also be useful to compute some expected values for log PDFs. Using our rule above
+\begin{align*}
+  \E{\mathcal {NW}[\bm\eta]}\left[\ln\mathcal{NW}[\bm\eta']\right]
+  \mkern-100mu &\mkern100mu =\bm\eta' \cdot \frac{\partial A(\bm\eta)}{\partial\bm\eta} -A({\bm\eta'})&\\
+  \qquad&=
+  -\frac12\left(V'^{-1ab}+\beta'\rho'^a\rho'^b\right){\nu}V_{ab}\\
+  &\qquad+\frac12(\nu'-D)\left(\ln\left|V\right|+\psi_D\left(\frac\nu2\right)+D\ln2\right)\\
+  &\qquad+\beta'\rho'^a\nu V_{ab}\rho^b\\
+  &\qquad-\frac12\beta'\left(\nu V_{ab}\rho^a\rho^b+\frac D\beta\right)\\
+  &\qquad-A({\bm\eta'})\\
+  &=
+  -\frac\nu2\left(V'^{-1ab}V_{ab}+\beta'\left(\rho'^a-\rho^a\right)\left(\rho'^b-\rho^b\right)V_{ab}\right)\\
+  &\qquad+\frac12(\nu'-D)\ln\left|\nu V\right|-A({\bm\eta'})\\
+  &\qquad-\frac D2\frac{\beta'}\beta+\frac12(\nu'-D)\left(\psi_D\left(\frac\nu2\right)+D\ln\frac2\nu\right)\\
+  &=\ln\mathcal {NW}(\rho^a,\nu V_{ab}|\bm\eta')\\
+  &\qquad-\frac D2\frac{\beta'}\beta+\frac12(\nu'-D)\left(\psi_D\left(\frac\nu2\right)+D\ln\frac2\nu\right)
+\end{align*}
+
+In the particular case that $\bm\eta'=\bm\eta$, it is easy to compute that
+\be
+\ln\mathcal {NW}\left(\rho^a,\nu V_{ab}|\bm\eta\right)=-\frac D2+\frac12(\nu-D)\ln\left|\nu V\right|-A({\bm\eta}).\nn
+\ee
+Putting this together with the last result for this case then,
+\begin{align}
+  \E{\mathcal {NW}\left(\bm\eta\right)}\left[\ln\mathcal{NW}\left(\bm\eta\right)\right]
+  &=
+  -A({\bm\eta})-D\nn\\
+  &\quad +\frac12(\nu-D)\left(\ln\left|2V\right|+\psi_D\left(\frac\nu2\right)\right)\label{eq:ElnNW}
+\end{align}
+
+We can also compute
+\begin{align}
+  \E{\mathcal {NW}\left(\mu^a,\Gamma_{ab}|\bm\eta\right)}\left[\ln\mathcal{N}\left(y^a|\mu^a,\Gamma_{ab}\right)\right]\mkern-200mu &\mkern200mu\nn\\
+  &=\E{}\left[-y^a\left(\Gamma_{ab}\mu^b\right) -\frac12 y^ay^b \Gamma_{ab} -\frac12 \mu^a\Gamma_{ab}\mu^b\right.\nn\\
+    &\qquad\quad+\left.\frac12\ln\left|\Gamma\right|+\frac D2\ln(2\pi)  \right]\nn\\
+  &=-y^a\E{}\left[T_{3a}\right] -\frac12 y^ay^b\E{}\left[T_{1ab}\right]\nn\\
+  &\qquad-\frac12 \E{}\left[T_4\right]+\frac12\E{}\left[T_2\right]+\frac D2\ln(2\pi)\nn\\
+  &=-\frac12\left(\left(y^a-\rho^a\right)\nu V_{ab}\left(y^b-\rho^b\right)+ \ln\left|\nu V\right|\vphantom{\frac12}\right.\nn\\
+  &\qquad\left.\vphantom{\frac12}-D\ln(2\pi)\right)+\frac12\left(-\frac D\beta+\psi_D\left(\frac\nu2\right)+D\ln\frac2\nu \right)\nn\\
+  &=\ln\mathcal{N}\left(y^a|\rho^a,\nu V_{ab}\right)+\frac12\left(-\frac D\beta+\psi_D\left(\frac\nu2\right)+D\ln\frac2\nu \right)\label{eq:ENWoflogN}
+\end{align}
+
+\subsubsection{Conjugacy to Gaussians}
+As noted, the Normal-Wishart family is conjugate to the Normal family with unknown precision matrix.  To make this relationship concrete, first note that all the terms involving $\mu^a$ and $\Gamma_{ab}$ in \eqref{eq:Normalexp} and \eqref{eq:NormalAth} are already found in \eqref{eq:NWexp}.  Specifically,
+\begin{align*}
+  \mathcal{N}(x^a|\mu^a,\Gamma_{ab})=\bm\Delta(x^a)\cdot\bm T_{\mathcal{NW}}(\mu^a,\Gamma_{ab})-\frac D2\ln(2\pi),
+\end{align*}
+with
+\begin{align}
+  \bm\Delta_{\mathcal{N}}(x^a)=\left[-\frac12x^ax^b,\frac12,x^a,-\frac12\right].\label{eq:NormalDelta}
+\end{align}
+
+If we assume a Normal-Wishart prior, then the result after some number of consistently Gaussian-likelihood sample observations will be another Normal-Wishart distribution, say with metaparameters $\eta$.  As derived more generally above in \eqref{eq:exp-predictive}, we can explicitly compute the marginalized probability distribution for the next sample,
+\begin{align}
+  \ln p(x^a|\bm\eta)&=A_{\mathcal{NW}}(\bm\eta+\bm\Delta_{\mathcal{N}}(x^a))-A_{\mathcal{NW}}(\bm\eta)\nn\\
+  &=\ln\frac{\Gamma\left(\frac{\nu+1}2\right)}{\Gamma\left(\frac{\nu+1-D}{2}\right)}+\frac D2\ln\frac{\beta}{\pi(1+\beta)}+\frac12\ln\left|V_{ab}\right|
+  \nn\\&\qquad
+  -\frac\nu2\ln\left(1+\frac\beta{1+\beta}(x^a-\rho^a)V_{ab}(x^b-\rho^b)\right)\nn\\
+  &=t_{\nu+1-D}\left(x^a\big|\rho^a,\frac{1+1/\beta}{(1+\nu-D)}V^{-1\,ab}\right)\label{eq:norm-predictive}
+\end{align}
+resulting in a multivariate $t$-distribution, with parameters (in \textit{Wikipedia}'s notation) $\nu\rightarrow\nu+1-D$, $\mu^a\rightarrow\rho^a$, $\Sigma^{ab}\rightarrow V^{-1\,ab}({1+1/\beta})/({(1+\nu-D)})$.
+
+
+\subsection{Dirichlet Distributions}
+A general element of mixture distributions, where a datum may be generated through any of a list of possible processes through some probability is some form of categorical distribution describing the probabilites $\{\alpha_i\}$ for each sy $\kappa$ process.  These are constrained by $\sum_{i=1}^\kappa\alpha_i=1$. If these probabilities are unknown, then the conjugate prior family is the Dirichlet distributions with PDF $\mathcal{D}\left(\{\alpha_i\}|\{\lambda_i\}\right)$.  The exponential form for the Dirichlet distirbution is
+\begin{align*}
+\bm\eta&=\{\lambda_i\}\\
+\bm T&=\{\ln\alpha_i\}\\
+h(\bm x)&=\exp\left(-\sum_{i=1}^\kappa\alpha_i\right)\\
+A(\bm\eta)&=\sum_{i=1}^\kappa\ln\Gamma(\lambda_i)-\ln\Gamma(\bar\lambda)
+\end{align*}
+where we abbreviate $\bar\lambda=\sum_{i=1}^\kappa\lambda_i$.
+
+Then, 
+\begin{align}
+\E{}\left[\ln\alpha_i\right] 
+&=\frac{\partial A}{\partial\lambda_{i}}\nn\\
+&=\psi(\lambda_i)-\psi(\bar\lambda).\label{eq:Elnalpha}
+\end{align}
+To compute $\E{}\left[\alpha_i\right]$, however, we need the exponential family relation for expected values of exponentials of the sufficient statisitics, \eqref{eq:EeT}. Thus
+\begin{align*}
+  \E{}\left[\alpha_i\right]
+  &=\exp\left[A(\{\lambda_j+\delta_{ji}\})-A(\{\lambda_j\})\right]\\
+  &=\exp\left[\ln\frac{\Gamma(\lambda_i+1)}{\Gamma(\lambda_i)}-\ln(\frac{\Gamma(\bar\lambda)}{\Gamma(\bar\lambda)}\right]\\
+  &=\frac{\lambda_i}{\bar\lambda}
+\end{align*}
+
+As before, we will also need expected value of the log of the PDF
+\begin{align}
+    \E{\mathcal{D}(\{\lambda_i\})}\left[\ln{\mathcal{D}[\{\lambda'_i\}]}\right]
+    &=\E{\bm\eta}\left[\ln{h(\bm x)}\right]+\bm\eta' \cdot \frac{\partial A(\bm\eta)}{\partial\bm\eta} -A({\bm\eta'})\nn\\
+    &=\E{\bm\eta}\left[-\sum_{i=1}^\kappa\alpha_i\right]\nn\\
+    &\quad+\sum_{i=1}^\kappa\left[\lambda'_i(\psi(\lambda_i)-\psi(\bar\lambda))\right]\nn\\
+    &\qquad-\sum_{i=1}^\kappa\ln\Gamma(\lambda'_i)+\ln\Gamma(\bar\lambda')\nn\\
+    &=-1-\bar\lambda'\psi(\bar\lambda)+\kappa\ln\Gamma(\bar\lambda')\nn\\
+    &\qquad+\sum_{i=1}^\kappa\left[\lambda'_i\psi(\lambda_i)-\ln\Gamma(\lambda'_i)\right].
+    \label{eq:ElnD}
+\end{align}
+
+
+
+\end{document}
