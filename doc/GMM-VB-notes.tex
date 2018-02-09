@@ -275,21 +275,19 @@ We can also substantiate \eqref{eq:qthmix} using \eqref{eq:GMM-like}, then apply
        \vphantom{\sum_{i=1}^N}\right)
        \nn\\&\qquad
        \vphantom{\frac12}
-       -ND\ln(2\pi)
+       -\frac12ND\ln(2\pi)
        -A_{\mathcal{D}}(\bm\eta_0)+\ln c_\theta
        \nn\\
   &=\sum_{j=1}^\kappa\ln\mathcal{NW}\left(\mu_j^a,\Gamma_{j\,ab}|\bm\eta'_{j}\right)\nn\\
-       &\qquad+\ln\mathcal{D}\left(\bm\alpha|\bm\lambda'\right).
+       &\qquad+\ln\mathcal{D}\left(\bm\alpha|\bm\lambda'\right).\label{eq:qth-gmm}
 \end{align}
-[Need to check $ND->\frac\kappa2ND$]
 To get the last line we assume value of $c_\theta$ to normalize the distribution, and define the primed metaparameters via the expressions in square brackets.  Concretely, these assignments are
 \begin{align}
   \ln c_\theta&=\sum_{j=1}^\kappa\left( A_{\mathcal{NW}}(\bm\eta_{j0})-A_{\mathcal{NW}}(\bm\eta'_{j})\right)
   \nn\\&\qquad
-  +ND\ln(2\pi)+\ln\mathcal{D}\left(\bm\alpha|\bm\lambda_0\right)-\ln\mathcal{D}\left(\bm\alpha|\bm\lambda'\right)\label{eq:Cth}\\
-  \bm\eta_j'&=\sum_{i=1}^N\hat\gamma_{i,j}\bm\Delta(y_i^a)\nn
+  +\frac12ND\ln(2\pi)+A_{\mathcal{D}}\left(\bm\lambda_0\right)-A_{\mathcal{D}}\left(\bm\lambda'\right)\label{eq:Cth}\\
+  \bm\eta_j'&=\bm\eta_{0j}+\sum_{i=1}^N\hat\gamma_{ij}\bm\Delta(y_i^a)\nn
 \end{align}
-    [Need to check $ND->\frac\kappa2ND$]
     where for completeness, and compactness we write the overall distribution in exponential form with,  $\bm\eta'=\{\bm\eta'_j\}$,
 \begin{align}
   \bm\eta_j=
@@ -368,11 +366,12 @@ If we allow $\kappa$ to vary, we can evaluate models using \eqref{eq:Feval-th} t
     -\sum_{i=1}^N\sum_{j=1}^k\hat\gamma^*_{ij}\log\hat\gamma^*_{ij}
     +A(\bm\eta^*)-A(\bm\eta_{0})
   \nn\\&\qquad
-  -ND\ln(2\pi)
+  -\frac12ND\ln(2\pi)
 \end{align}
 
-[Need to check $ND->\frac\kappa2ND$]
-We can also compute from \eqref{eq:Feval-Z} using \eqref{eq:ElnNW} and \eqref{eq:ElnD}
+Alternatively, we can also compute from \eqref{eq:Feval-Z} using \eqref{eq:ElnNW} and \eqref{eq:ElnD}.
+
+In that case one term is the maximum likelihood, and the rest of the terms should yield the BIC result in the large-$N$ limit.  We see no cute way to verify one expression against the other
 
 \subsection{The posterior predictive}
 
@@ -770,7 +769,7 @@ We can also compute
 \subsubsection{Conjugacy to Gaussians}
 As noted, the Normal-Wishart family is conjugate to the Normal family with unknown precision matrix.  To make this relationship concrete, first note that all the terms involving $\mu^a$ and $\Gamma_{ab}$ in \eqref{eq:Normalexp} and \eqref{eq:NormalAth} are already found in \eqref{eq:NWexp}.  Specifically,
 \begin{align*}
-  \mathcal{N}(x^a|\mu^a,\Gamma_{ab})=\bm\Delta(x^a)\cdot\bm T_{\mathcal{NW}}(\mu^a,\Gamma_{ab})-\frac D2\ln(2\pi),
+  \mathcal{N}(x^a|\mu^a,\Gamma_{ab})=\bm\Delta_{\mathcal{N}}(x^a)\cdot\bm T_{\mathcal{NW}}(\mu^a,\Gamma_{ab})-\frac D2\ln(2\pi),
 \end{align*}
 with
 \begin{align}
@@ -793,7 +792,7 @@ A general element of mixture distributions, where a datum may be generated throu
 \begin{align*}
 \bm\eta&=\{\lambda_i\}\\
 \bm T&=\{\ln\alpha_i\}\\
-h(\bm x)&=\exp\left(-\sum_{i=1}^\kappa\alpha_i\right)\\
+h(\bm x)&=\exp\left(-\sum_{i=1}^\kappa\ln\alpha_i\right)\\
 A(\bm\eta)&=\sum_{i=1}^\kappa\ln\Gamma(\lambda_i)-\ln\Gamma(\bar\lambda)
 \end{align*}
 where we abbreviate $\bar\lambda=\sum_{i=1}^\kappa\lambda_i$.
@@ -816,11 +815,11 @@ As before, we will also need expected value of the log of the PDF
 \begin{align}
     \E{\mathcal{D}(\{\lambda_i\})}\left[\ln{\mathcal{D}[\{\lambda'_i\}]}\right]
     &=\E{\bm\eta}\left[\ln{h(\bm x)}\right]+\bm\eta' \cdot \frac{\partial A(\bm\eta)}{\partial\bm\eta} -A({\bm\eta'})\nn\\
-    &=\E{\bm\eta}\left[-\sum_{i=1}^\kappa\alpha_i\right]\nn\\
+    &=-\sum_{i=1}^\kappa\psi(\lambda_i)+\kappa\psi(\bar\lambda)\nn\\
     &\quad+\sum_{i=1}^\kappa\left[\lambda'_i(\psi(\lambda_i)-\psi(\bar\lambda))\right]\nn\\
     &\qquad-\sum_{i=1}^\kappa\ln\Gamma(\lambda'_i)+\ln\Gamma(\bar\lambda')\nn\\
-    &=-1-\bar\lambda'\psi(\bar\lambda)+\kappa\ln\Gamma(\bar\lambda')\nn\\
-    &\qquad+\sum_{i=1}^\kappa\left[\lambda'_i\psi(\lambda_i)-\ln\Gamma(\lambda'_i)\right].
+    &=(\kappa-\bar\lambda')\psi(\bar\lambda)+\ln\Gamma(\bar\lambda')\nn\\
+    &\qquad+\sum_{i=1}^\kappa\left[(\lambda'_i-1)\psi(\lambda_i)-\ln\Gamma(\lambda'_i)\right].
     \label{eq:ElnD}
 \end{align}
 
