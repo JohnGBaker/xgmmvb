@@ -8,6 +8,7 @@ import cProfile as profile
 import time
 import scipy
 import scipy.special
+import copy
 
 negl_wt=0.001
 displayCounter=0
@@ -29,6 +30,8 @@ displayEvery=4
 # eta params:
 #  eta1-5 
 #  Ncomp   component effective count 
+##options
+doProjection=False
 
 log2pi=math.log(2*math.pi)
 logpi=math.log(math.pi)
@@ -52,8 +55,8 @@ def checkF(logdetcov,logdetcov0,D,N,nu0,beta0):
 def sampleMultivarStudents(nu,mu,sigma):
     #Multivariate Student's t distribution constructed from
     #chi-squared rescaled from from multivariate normal (as in wikipedia)
-    u=numpy.random.chisquare(nu)
-    y=numpy.random.multivariate_normal(np.zeros_like(mu),sigma)
+    u=np.random.chisquare(nu)
+    y=np.random.multivariate_normal(np.zeros_like(mu),sigma)
     fac=math.sqrt(nu/u)
     x=mu+y*fac
     return x
@@ -95,9 +98,9 @@ def get_uninformative_eta0(kappa,D=None,Y=None):
         #For means set middle points
         rho0=0.5*np.ones(D)#*(maxs+mins)
         #For the covariance scaling parameter set something smallish
-        beta0=0.1
+        #beta0=0.1
         #beta0=nu0
-        #beta0=0.01
+        beta0=0.01
         Vinv0=np.diag(wid*wid*nu0*beta0/4.0)
     elif(D is not None):
         fail
@@ -118,6 +121,39 @@ def get_uninformative_eta0(kappa,D=None,Y=None):
     eta[4]=lamb0
 
     return eta
+
+def compute_derived_theta(kappa,D,eta):
+    #This operates over all components in vector form
+    #note: eta = [ V^-1 + beta*rho*rho , nu - D , beta*rho , beta , lamb ]
+    #could make this more efficient by only operating on active components
+    for i in range(5):print("eta[",i,"]=",eta[i])
+    nu    = eta[1] + D
+    beta  = eta[3].copy() 
+    lamb  = eta[4].copy() 
+    rho   = (eta[2].T/beta).T
+    Vinv  = np.array([ eta[0][j] - beta[j]*np.outer(rho[j],rho[j]) for j in range(kappa )])
+    Vnu   = np.array([ nu[j] * np.linalg.pinv( Vinv[j] ) for j in range(kappa )])
+    logdetV  = np.array([ -np.linalg.slogdet( Vinv[j] )[1] for j in range(kappa) ])
+    return nu,beta,lamb,rho,Vinv,Vnu,logdetV
+    
+def compute_A_NW(D,nu,beta,logdetV):
+    return nu/2.0*(logdetV+D*math.log(2.0))+lnGammaDhalf(nu,D)-D/2.0*math.log(beta)+D/2.0*log2pi
+
+def compute_A_D(lamb):
+    kappa=len(lamb)
+    barlamb=sum(lamb)
+    result=sum([scipy.special.gammaln(lamb[k]) for k in range(kappa)])
+    result-= scipy.special.gammaln(barlamb)
+    return result
+
+ 
+def compute_Aeta(D,nu,beta,lamb,logdetV):
+    kappa=len(lamb)
+    Acomp=[None]*kappa
+    for j in range(kappa):
+        Acomp[j]=compute_A_NW(D,nu[j],beta[j],logdetV[j])
+    A_Dval=compute_A_D(lamb)
+    return sum(Acomp)+A_Dval,Acomp,A_Dval
 
 def ellipse(rho,cov,ic,ix,iy,siglev=2,N_thetas=60):
         #print "ic,||cov||,|cov|",ic,np.linalg.norm(cov),np.linalg.det(cov)
@@ -156,29 +192,21 @@ class gmmvb:
         self.kappa=kappa
         self.D=len(Y[0])
         self.eta0=get_uninformative_eta0(self.kappa,self.D,self.Y)
-        self.eta=[np.array([self.eta0[i]]*self.kappa) for i in range(5)] #initialize with prior        
-        self.updated_eta=True
         self.Ncomp=[None]*self.kappa
         self.gammabar = np.zeros((self.N,self.kappa))
         self.resetActive(range(self.kappa))
-        self.compute_derived_theta()
-
         #save prior theta stuff
-        self.nu0   = self.nu.copy()
-        self.beta0 = self.beta.copy()
-        self.lamb0 = self.lamb.copy()
-        self.rho0  = self.rho.copy()
-        self.Vinv0 = self.Vinv.copy()
-        self.Vnu0  = self.Vnu.copy()
-        self.logdetV0  = self.logdetV.copy()
-
+        self.nu0,self.beta0,self.lamb0,self.rho0,self.Vinv0,self.Vnu0,self.logdetV0=compute_derived_theta(self.kappa,self.D,[np.array([self.eta0[i]]*self.kappa) for i in range(5)])
+        self.A0,self.A_comp0,self.A_Dval0=compute_Aeta(self.D,self.nu0,self.beta0,self.lamb0,self.logdetV0)
         print ("Initializing with prior:")
-        for k in self.activeComponents:print ("rho",k,self.rho[k],self.Ncomp[k],self.logdetV[k],self.logdetV[k]+math.log((1+1.0/self.beta[k])/max([1,self.nu[k]-self.D-1]))*self.D,self.beta[k],"\n Sigma-eigvals",np.linalg.eigvalsh(self.Vinv[k]*((1+1.0/self.beta[k])/max([1,self.nu[k]-self.D-1]))))
-        self.A_comp=[None]*self.kappa
-        self.update_Aeta()
-        self.A_comp0=[self.A_comp[k] for k in range(self.kappa)]
-        self.A_Dval0=self.A_Dval.copy()
-        self.A0=self.Aeta.copy()
+        for k in self.activeComponents:print ("rho",k,self.rho0[k],self.Ncomp[k],self.logdetV0[k],self.logdetV0[k]+math.log((1+1.0/self.beta0[k])/max([1,self.nu0[k]-self.D-1]))*self.D,self.beta0[k],"\n Sigma-eigvals",np.linalg.eigvalsh(self.Vinv0[k]*((1+1.0/self.beta0[k])/max([1,self.nu0[k]-self.D-1]))))
+        self.eta=[np.array([self.eta0[i]]*self.kappa) for i in range(5)] #initialize with prior        
+        self.updated_eta=True
+        self.nu,self.beta,self.lamb,self.rho,self.Vinv,self.Vnu,self.logdetV=compute_derived_theta(self.kappa,self.D,self.eta)
+        self.updated_theta=True
+        self.A,self.A_comp,self.A_Dval=compute_Aeta(self.D,self.nu,self.beta,self.lamb,self.logdetV)
+
+        
         #randomly initialize rhos from data point
         self.rho=np.array([Y[i] for i in np.random.choice(self.N,self.kappa)])
         self.hatgamma=np.zeros((self.N,self.kappa))
@@ -186,6 +214,7 @@ class gmmvb:
         self.Falt=None
         self.like=None
         self.EMtol=self.eta0[3]*.01
+        self.needFalt=False
         
     def compute_derived_theta(self):
         #This operates over all components in vector form
@@ -227,7 +256,7 @@ class gmmvb:
     def A_NW(self,j):
         #need: derived theta:beta,nu,logdetV,log2pi
         #can evaluate only on active components
-        print ("ANW:",j,self.nu[j]*(self.logdetV[j]/2),self.nu[j]*(self.D*math.log(2.0)/2),lnGammaDhalf(self.nu[j],self.D),-self.D/2.0*math.log(self.beta[j]),self.D/2.0*log2pi)
+        #print ("ANW:",j,self.nu[j]*(self.logdetV[j]/2),self.nu[j]*(self.D*math.log(2.0)/2),lnGammaDhalf(self.nu[j],self.D),-self.D/2.0*math.log(self.beta[j]),self.D/2.0*log2pi)
         return self.nu[j]/2.0*(self.logdetV[j]+self.D*math.log(2.0))+lnGammaDhalf(self.nu[j],self.D)-self.D/2.0*math.log(self.beta[j])+self.D/2.0*log2pi
 
     def update_Aeta(self):
@@ -236,8 +265,8 @@ class gmmvb:
             self.A_comp[j]=self.A_NW(j)
         self.A_Dval=self.A_D()
         self.Aeta=sum(self.A_comp)+self.A_Dval
-        print ("A_D,A_eta[]",self.A_Dval,self.A_comp)
-        print ("update_Aeta",self.Aeta)
+        #print ("A_D,A_eta[]",self.A_Dval,self.A_comp)
+        #print ("update_Aeta",self.Aeta)
         self.updated_Aeta=True
         
     def computeF(self):
@@ -261,7 +290,7 @@ class gmmvb:
         #print ("Cth.. =",[self.A_comp0[k] for k in range(self.kappa)])
         #print ("Cth...-",[self.Ncomp[k]*D*log2pi for k in range(self.kappa)])
         #print ("Cth=",[self.A_comp[k]-self.A_comp0[k]-self.Ncomp[k]*D*log2pi for k in range(self.kappa)])
-        print ("F:",-glogg,val0,"dAeta:",self.Aeta-self.A0,self.Aeta,self.A0,"DA_D:",self.A_Dval-self.A_Dval0,self.A_Dval,self.A_Dval0)
+        #print ("F:",-glogg,val0,"dAeta:",self.Aeta-self.A0,self.Aeta,self.A0,"DA_D:",self.A_Dval-self.A_Dval0,self.A_Dval,self.A_Dval0)
         
         val += self.Aeta - self.A0;
         return val
@@ -272,8 +301,8 @@ class gmmvb:
         #updated (expectation step)
         #This computation is not going to be particularly fast or optimized
         assert self.updated_gamma
-        print("gbi=",np.sum(self.gammabar,1))
-        print("lgbi=",np.log(np.sum(self.gammabar,1)))
+        #print("gbi=",np.sum(self.gammabar,1))
+        #print("lgbi=",np.log(np.sum(self.gammabar,1)))
         like = sum(np.log(np.sum(self.gammabar,1)))
         barlamb = sum(self.lamb)
         barlamb0 = sum(self.lamb0)
@@ -340,7 +369,7 @@ class gmmvb:
                 log_gamma[k] += -np.dot(dy,vec)
                 #print "lg",log_gamma[k],-np.dot(dy,vec),dy,vec
                 #may want to skip this if not computing Falt
-                self.gammabar[i,k]=math.exp(log_gamma[k])
+                if(self.needFalt):self.gammabar[i,k]=math.exp(log_gamma[k])
                 #print("gb[",i,",",k,"]=",self.gammabar[i,k])
             #Now the exponentials of log_gamma
             gamma=np.zeros(len(self.activeComponents))
@@ -362,6 +391,12 @@ class gmmvb:
             self.updated_theta=False
             self.updated_gamma=True
             
+    def componentOverlap(self,j1,j2):
+        #print("computing overlap:")
+        #for i in range(self.N):
+        #    print(" ",i,self.hatgamma[i,j1],self.hatgamma[i,j2])
+        return np.sum(self.hatgamma[:,j1]*self.hatgamma[:,j2])
+
     def maximizationStep(self):
         if(not self.have_g):raise ValueError("Should call expectationStep before maximizationStep after changing activeComponents")
         #Realizes \ref{eq:meta-update} = Eq. 28 of notes
@@ -395,27 +430,91 @@ class gmmvb:
         self.updated_eta=True
         self.updated_gamma=False
         self.compute_derived_theta()
-        for j in self.activeComponents:
-            sMean=yNcomp[j]/self.Ncomp[j]
-            sVar=yyNcomp[j]/self.Ncomp[j]-np.outer(sMean,sMean)
+        #for j in self.activeComponents:
+            #sMean=yNcomp[j]/self.Ncomp[j]
+            #sVar=yyNcomp[j]/self.Ncomp[j]-np.outer(sMean,sMean)
             #print j,"Vinv/nu,sVar:\n",(self.Vinv[j]/self.nu[j]),"\n",(sVar)
-            print (j,"eigvals:Vinv/nu,sVar:\n",np.linalg.eigvalsh(self.Vinv[j]/self.nu[j]),"\n",np.linalg.eigvalsh(sVar))
-            print ("rho-sMean:",self.rho[j]-sMean)
-        
+            #print (j,"eigvals:Vinv/nu,sVar:\n",np.linalg.eigvalsh(self.Vinv[j]/self.nu[j]),"\n",np.linalg.eigvalsh(sVar))
+            #print ("rho-sMean:",self.rho[j]-sMean)
+
+    def project_partitions(self, dhgamma, dhgammaP1):
+        self.update_Aeta()
+        Fval=self.computeF()
+        #Here we take a step away from strict EM and try to accelerated
+        #the process by projecting toward the conclusion of process.
+        #The idea is that the EM process produces a sequence of dN vectors
+        #And we can try to extrapolate that sequence.  For the first version
+        #of this we suppose that the trend is linear, independently for each
+        #component, concluding at dhgamma(j,t,i) = 0 for  some t0(j,i).  The result is
+        # ratio = dhgamma[-1]/dhgamma[0].
+        # t0 = 1 / ( ratio - 1 ).
+        #This clearly doesn't make sense if ratio(i,j)<1.  We then suppose that
+        #we leap ahead some fraction (alpha) of that time.  To do so we integrate
+        #to compute the total step.  We get:
+        # deltahgamma = alpha*(1-alpha/2)*ddhgamma[0]/(ratio-1)
+        #Finally we have to assure that sum(deltahgamma(i))=0. To realize this we just work with
+        #a common mean of the  ratio for all components then deltahgamma 
+        #will be a direct rescaling of dhgamma[0].
+        print("Trying projection")
+        print("hatgamma shape=",self.hatgamma.shape)
+        self.savehgamma=self.hatgamma
+        alpha=0.75
+        fac=alpha*(1-alpha/2)
+        ratios=dhgamma/dhgammaP1
+        for i in range(self.N):
+            scaling=0
+            if( all( r > 0 for r in ratios[i]) ):
+                scaling=np.mean(ratios[i])*fac
+            if(scaling>0):
+                newhg=self.hatgamma[i]+dhgamma[i]*scaling
+                if( all( hg > 0 for hg in newhg )):
+                    self.hatgamma[i]=newhg
+        self.maximizationStep()
+        self.update_Aeta()
+        testFval=self.computeF()
+        print("Fval,test:",Fval,testFval)
+        if(not testFval>Fval):
+            #abort
+            print("Failed")
+            self.hatgamma=self.savehgamma
+            self.maximizationStep()
+            return False
+        print("Succeeded")
+        print("hatgamma shape=",self.hatgamma.shape)
+
+        return True
+                    
+                
+
     def run_EM(self,backend=None,MaxSteps=800):
         Fval=-float('inf')
         #self.expectationStep()
         print ("active =",self.activeComponents)
         every=1
         Ncomp_old=np.array(self.Ncomp)
+        dhgamma=None
+        oldhgamma=self.hatgamma.copy()
         for count in range(MaxSteps):
             self.expectationStep()
-            altFval=self.computeFalt()
-            print (count,"altFval=",altFval)
-            self.maximizationStep()
+            dhgammaP1=dhgamma
+            if(oldhgamma is not None):dhgamma=self.hatgamma-oldhgamma
+            if(self.needFalt):altFval=self.computeFalt()
+            if(doProjection and dhgammaP1 is not None):
+                self.maximizationStep()
+                if self.project_partitions(dhgamma,dhgammaP1):
+                    oldhgamma=None
+                    dhgamma=None
+                else:
+                    oldhgamma=self.hatgamma.copy()
+            else:
+                self.maximizationStep()
+                oldhgamma=self.hatgamma.copy()
             Ncomp=np.array(self.Ncomp)
-            if(count>0):dNcomp2=np.linalg.norm(Ncomp-Ncomp_old)**2
+            if(count>0):
+                dNcomp = Ncomp-Ncomp_old
+                dNcomp2=np.linalg.norm(dNcomp)**2
             else: dNcomp2=self.N**2
+            
             #if self.activeComponents is not None:
             #    jlist=self.activeComponents
             #else:
@@ -428,6 +527,7 @@ class gmmvb:
             if(count%every==0):
                 if(count>0):print (count,"dNcomp=",dNcomp2,Ncomp-Ncomp_old)
                 #for k in self.activeComponents:print "rho",k,self.rho[k],self.Ncomp[k],self.logdetV[k],self.logdetV[k]+math.log((1+1.0/self.beta[k])/max([1,self.nu[k]-self.D-1]))*self.D,self.beta[k],"\n Sigma-eigvals",np.linalg.eigvalsh(self.Vinv[k]*((1+1.0/self.beta[k])/max([1,self.nu[k]-self.D-1])))
+                if(self.needFalt):print (count,"altFval=",altFval)
                 print (count,"Fval=",Fval)
                 print (count,"Ncomp=",self.Ncomp)
                 print (count,"lndet=",self.logdetV)
@@ -447,19 +547,21 @@ class gmmvb:
             if(dNcomp2<self.EMtol):
                 break
         self.updated_gamma=True
-        altFval=self.computeFalt()
+        if(self.needFalt):altFval=self.computeFalt()
         self.F=Fval
 
-        print ("best Fval/alt=",Fval,altFval)
+        if(self.needFalt):print ("best Fval/alt=",Fval,altFval)
+        else: print ("best Fval",Fval)
         for j in range(self.kappa):
-            print("inv(Vnu)=",np.linalg.pinv(self.Vnu[j]))
+            #print("inv(Vnu)=",np.linalg.pinv(self.Vnu[j]))
             logdetcov  = -np.linalg.slogdet( self.Vnu[j] )[1]
             logdetcov0  = -np.linalg.slogdet( self.Vnu0[j] )[1]
             print ("checkF(",j,"):",checkF(logdetcov,logdetcov0,self.D,self.Ncomp[j],self.nu0[j],self.beta0[j]))
-            print("coeff=",-1-logdetcov+self.D*math.log(2*math.pi))
-            print ("largeN: F->",self.Ncomp[j]/2*(-1-logdetcov+self.D*math.log(2*math.pi))-(self.D/4.)*(self.D+3)*math.log(self.Ncomp[j]))
+            print ("Fcomp(",j,"):",self.A_comp[j]-self.A_comp0[j]-self.Ncomp[j]*self.D/2.0*log2pi)
+            #print("coeff=",-1-logdetcov+self.D*math.log(2*math.pi))
+            #print ("largeN: F->",self.Ncomp[j]/2*(-1-logdetcov+self.D*log2pi)-(self.D/4.)*(self.D+3)*math.log(self.Ncomp[j]))
                    
-    def split_component(self,j):
+    def splitComponent(self,j):
         #This is a crucial element of the improve-structure process
         #A component is split into two new ones
         #We define the split in terms of the derived theta, then
@@ -472,25 +574,25 @@ class gmmvb:
         #  -The set a new component mean x1 reflected opposite the original
         #    -This component will be added on the end
         #  -The rest of the theta params are defined as in Eq 34 \ref{eq:split}
-        x0s=[self.sampleComponentPosteriorPredictive(self.Vinv[j],self.nu[j],self.rho[j],self.beta[j]) for i in range(3)]
-        dists=[np.linalg.norm(x0-model.rho[j]) for x0 in x0s]
+        x0s=[sampleComponentPosteriorPredictive(self.Vinv[j],self.nu[j],self.rho[j],self.beta[j]) for i in range(3)]
+        dists=[np.linalg.norm(x0-self.rho[j]) for x0 in x0s]
         maxdist=max(dists)
         x0=x0s[dists.index(maxdist)]
-        x1=-x0+2.0*model.rho[j] #thus x0-rho + x1-rho = 0
-        nu0 = self.eta0[1] + D
+        x1=-x0+2.0*self.rho[j] #thus x0-rho + x1-rho = 0
+        nu0 = self.eta0[1] + self.D
         nuval    = 0.5*( self.nu[j] + nu0 )
         betaval  = 0.5*( self.beta[j]  + self.eta0[3] ) 
         lambval  = 0.5*( self.lamb[j]  + self.eta0[4] ) 
         Vinvval  = 2.0/(1.0+nu0/self.nu[j])*self.Vinv[j]
-        Vnuval   = newnu * np.linalg.pinv( newVinv )
-        logdetVval  = -np.linalg.slogdet( newVinv )[1]
-        self.rho   = np.concatenate(( model.rho    , [    x1   ]  ))
-        self.nu    = np.concatenate(( model.nu     , [  nuval  ]  ))
-        self.beta  = np.concatenate(( model.beta   , [ betaval ]  ))
-        self.lamb  = np.concatenate(( model.lamb   , [ lambval ]  ))
-        self.Vinv  = np.concatenate(( model.Vinv   , [ Vinvval ]  ))
-        self.Vnu   = np.concatenate(( model.Vnu    , [   Vnu   ]  ))
-        self.logdetV=np.concatenate(( model.logdetV, [logdetVval] ))
+        Vnuval   = nuval * np.linalg.pinv( Vinvval )
+        logdetVval  = -np.linalg.slogdet( Vinvval )[1]
+        self.rho   = np.concatenate(( self.rho    , [    x1   ]  ))
+        self.nu    = np.concatenate(( self.nu     , [  nuval  ]  ))
+        self.beta  = np.concatenate(( self.beta   , [ betaval ]  ))
+        self.lamb  = np.concatenate(( self.lamb   , [ lambval ]  ))
+        self.Vinv  = np.concatenate(( self.Vinv   , [ Vinvval ]  ))
+        self.Vnu   = np.concatenate(( self.Vnu    , [ Vnuval  ]  ))
+        self.logdetV=np.concatenate(( self.logdetV, [logdetVval] ))
         self.rho[j]    = x0.copy();
         self.nu[j]     = nuval;
         self.beta[j]   = betaval;
@@ -498,14 +600,24 @@ class gmmvb:
         self.Vinv[j]   = Vinvval.copy();
         self.Vnu[j]    = Vnuval.copy();
         self.logdetV[j]= logdetVval;
-        actives=self.activeComponents+[model.kappa]
+        actives=self.activeComponents+[self.kappa]
         self.kappa+=1
         self.hatgamma=np.zeros((self.N,self.kappa))
-        self.A_comp = np.concatenate( self.A_comp, [None] )
+        self.A_comp = [None]*self.kappa
         self.activeComponents=actives.copy()
-        #We don't call resetActives because, in this case g[i] specifically should not change because of the split
+        #We don't call resetActive because, in this case g[i] specifically should not change because of the split
         self.update_Aeta()
         self.A0=self.Aeta
+        self.update_Aeta()
+        self.A_comp0=[self.A_comp[k] for k in range(self.kappa)]
+        self.A_Dval0=self.A_Dval.copy()
+        self.A0=self.Aeta.copy()
+        #randomly initialize rhos from data point
+        self.rho=np.array([Y[i] for i in np.random.choice(self.N,self.kappa)])
+        self.hatgamma=np.zeros((self.N,self.kappa))
+        self.F=None
+        self.Falt=None
+        self.like=None
         
 #probably don't need this...?
     def update(self):
@@ -530,9 +642,10 @@ class gmmvb:
         ##                these are downsampled
         splits=[False]*self.kappa
         replacements=[]
-        #self.expectationStep()
-        updatelist=np.random.permutation(self.k)
-        model=self.copy()
+        self.expectationStep()
+        self.maximizationStep()
+        updatelist=np.random.permutation(self.kappa)
+        model=copy.deepcopy(self)
         #model.evaluate(points)
         EMtol=self.EMtol
         tolRelax=10
@@ -543,18 +656,20 @@ class gmmvb:
             print ("\nTrying split "+str(jcount)+"/"+str(len(updatelist)))
             #We first compute the overlap of this component with others
             #Use full points w for this
-            overs=[np.sum(w[:,j]*w[:,k]) for k in range(model.k)]
-            overs=np.array(overs)/sum(overs)
+            #overs=[np.sum(w[:,j]*w[:,k]) for k in range(model.kappa)]
+            overs=[model.componentOverlap(j,k) for k in range(model.kappa)]
+            print("overlaps=",overs)
+            overs=np.array(overs)/(sum(overs)+1e-10)
             active=[i for i in range(len(overs)) if overs[i]>tolOverlap]
             print (j,": overlaps =",overs)
             print ("-> active =",active)
             #Next we downselect to just the relevant points
             #jpoints=self.samplePoints(points,nSamp=nSamp,target=j,actives=active,w=w)
             #Work with a parallel test model (on the reduced set of points)
-            testmodel=self.copy()
-            testmodel.resetActives(active)
+            testmodel=copy.deepcopy(self)
+            testmodel.resetActive(active)
             testmodel.expectationStep()
-            newmodel=testmodel.copy()
+            newmodel=copy.deepcopy(testmodel)
             newmodel.splitComponent(j)
             newmodel.EMtol=EMtol*tolRelax
             newmodel.run_EM_MAP()
@@ -582,7 +697,7 @@ class gmmvb:
                 print ("Found improved model:")
                 #newmodel.show()
                 newmodel.EMtol=EMtol
-                model=newmodel.copy()
+                model=copy.deepcopy(newmodel)
                 #we accept the newmodel as model
                 #we don't run full EM, but we do need to update w and we
                 #(do?) update the model params

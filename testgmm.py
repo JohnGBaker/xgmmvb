@@ -1,6 +1,6 @@
 import numpy as np
 #import kdtree
-import gmm
+import gmmvb
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import math

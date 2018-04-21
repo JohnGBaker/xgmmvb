@@ -16,16 +16,23 @@ do_xgmmvb=False
 do_dump=True
 trials=1
 
-#np.random.seed(918237491)#take the mystery out
-
 #command line arguments
 parser = argparse.ArgumentParser(description="Perform Gaussian Mixture Model Variational Bayesian clustering analysis on data")
 parser.add_argument('--data',help="File with the source data")
 parser.add_argument('-k',help="Specify number of components [for test data] (def 5)",default="5",type=float)
+parser.add_argument('-s',help="Specify random seed",default="-1",type=int)
 parser.add_argument('-n',help="Specify approx number of sample points",default="500",type=float)
 parser.add_argument('--skip',help="Specify text list of columns to skip (comma separated, count from 1")
 parser.add_argument('--down',help="Integer factor by which to downsample the data.")
+parser.add_argument('-p',help="doProjection",action='store_true')
+parser.add_argument('-x',help="Allow number of components to vary",action='store_true')
 args=parser.parse_args()
+
+#set seed
+if(args.s<0):seed=np.random.randint(0,1000000)
+else:seed=args.s
+print("seed=",seed)
+np.random.seed(seed)
 
 mdim=2
 
@@ -33,6 +40,10 @@ Npts=int(args.n)
 kcent=int(args.k)
 parnames=None
 outname="test.pdf"
+if(args.p):gmmvb.doProjection=True
+if(args.x):
+    do_xgmmvb=True
+    do_gmmvb=False
 
 #generate points
 if(args.data==None):
@@ -46,7 +57,7 @@ if(args.data==None):
         #k*pi*twosigma^2-f*(1-(1-twosigma)^2)/4 = f
         ffill=0.5
         buf=2;
-        sigma=0.5/math.sqrt(kcent*math.pi/ffill)*np.random.rand(kcent)
+        sigma=1.0/math.sqrt(kcent*math.pi/ffill)*np.random.rand(kcent)
         print ("making data with",kcent,"clusters")
         print ("sigma=",sigma)
         datacenters=(((np.random.rand(kcent,mdim).T*(1-2*buf*sigma)+buf*sigma)).T).tolist()
