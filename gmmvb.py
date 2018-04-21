@@ -126,7 +126,7 @@ def compute_derived_theta(kappa,D,eta):
     #This operates over all components in vector form
     #note: eta = [ V^-1 + beta*rho*rho , nu - D , beta*rho , beta , lamb ]
     #could make this more efficient by only operating on active components
-    for i in range(5):print("eta[",i,"]=",eta[i])
+    #for i in range(5):print("eta[",i,"]=",eta[i])
     nu    = eta[1] + D
     beta  = eta[3].copy() 
     lamb  = eta[4].copy() 
@@ -204,8 +204,7 @@ class gmmvb:
         self.updated_eta=True
         self.nu,self.beta,self.lamb,self.rho,self.Vinv,self.Vnu,self.logdetV=compute_derived_theta(self.kappa,self.D,self.eta)
         self.updated_theta=True
-        self.A,self.A_comp,self.A_Dval=compute_Aeta(self.D,self.nu,self.beta,self.lamb,self.logdetV)
-
+        self.Aeta,self.A_comp,self.A_Dval=compute_Aeta(self.D,self.nu,self.beta,self.lamb,self.logdetV)
         
         #randomly initialize rhos from data point
         self.rho=np.array([Y[i] for i in np.random.choice(self.N,self.kappa)])
@@ -221,15 +220,7 @@ class gmmvb:
         #note: eta = [ V^-1 + beta*rho*rho , nu - D , beta*rho , beta , lamb ]
         #could make this more efficient by only operating on active components
         assert self.updated_eta
-        self.nu    = self.eta[1] + self.D
-        self.beta  = self.eta[3].copy() 
-        self.lamb  = self.eta[4].copy() 
-        self.rho   = (self.eta[2].T/self.beta).T
-        self.Vinv  = np.array([ self.eta[0][j] - self.beta[j]*np.outer(self.rho[j],self.rho[j]) for j in range(self.kappa )])
-        self.Vnu   = np.array([ self.nu[j] * np.linalg.pinv( self.Vinv[j] ) for j in range(self.kappa )])
-        self.logdetV  = np.array([ -np.linalg.slogdet( self.Vinv[j] )[1] for j in range(self.kappa) ])
-        #print "shapes:eta0,1,2,3,4,rho,Vinv,Vnu",self.eta[0].shape,self.eta[1].shape,self.eta[2].shape,self.eta[3].shape,self.eta[4].shape,self.rho.shape,self.Vinv.shape,self.Vnu.shape
-        #self.show()
+        self.nu,self.beta,self.lamb,self.rho,self.Vinv,self.Vnu,self.logdetV=compute_derived_theta(self.kappa,self.D,self.eta)
         self.updated_theta=True
         self.updated_Aeta=False
         
@@ -246,27 +237,8 @@ class gmmvb:
         print ("th3    ",self.nu[3],self.beta[3],self.lamb[3],self.rho[3],self.logdetV[3])
         print ("th4    ",self.nu[4],self.beta[4],self.lamb[4],self.rho[4],self.logdetV[4])
         
-    def A_D(self):
-        #need self.lamb
-        barlamb=sum(self.lamb)
-        result=sum([scipy.special.gammaln(self.lamb[k]) for k in range(self.kappa)])
-        result-= scipy.special.gammaln(barlamb)
-        return result
-    
-    def A_NW(self,j):
-        #need: derived theta:beta,nu,logdetV,log2pi
-        #can evaluate only on active components
-        #print ("ANW:",j,self.nu[j]*(self.logdetV[j]/2),self.nu[j]*(self.D*math.log(2.0)/2),lnGammaDhalf(self.nu[j],self.D),-self.D/2.0*math.log(self.beta[j]),self.D/2.0*log2pi)
-        return self.nu[j]/2.0*(self.logdetV[j]+self.D*math.log(2.0))+lnGammaDhalf(self.nu[j],self.D)-self.D/2.0*math.log(self.beta[j])+self.D/2.0*log2pi
-
     def update_Aeta(self):
-        #need: updated derived theta
-        for j in self.activeComponents:
-            self.A_comp[j]=self.A_NW(j)
-        self.A_Dval=self.A_D()
-        self.Aeta=sum(self.A_comp)+self.A_Dval
-        #print ("A_D,A_eta[]",self.A_Dval,self.A_comp)
-        #print ("update_Aeta",self.Aeta)
+        self.Aeta,self.A_comp,self.A_Dval=compute_Aeta(self.D,self.nu,self.beta,self.lamb,self.logdetV)
         self.updated_Aeta=True
         
     def computeF(self):
@@ -286,12 +258,6 @@ class gmmvb:
                 #print min(gvec)
                 if(min(self.hatgamma[i])>1e-4):print ("glog:",min(self.hatgamma[i]),gvec,self.hatgamma[i,:],self.Y[i])
         val = val0-glogg
-        #print ("Cth.  =",[self.A_comp[k] for k in range(self.kappa)])
-        #print ("Cth.. =",[self.A_comp0[k] for k in range(self.kappa)])
-        #print ("Cth...-",[self.Ncomp[k]*D*log2pi for k in range(self.kappa)])
-        #print ("Cth=",[self.A_comp[k]-self.A_comp0[k]-self.Ncomp[k]*D*log2pi for k in range(self.kappa)])
-        #print ("F:",-glogg,val0,"dAeta:",self.Aeta-self.A0,self.Aeta,self.A0,"DA_D:",self.A_Dval-self.A_Dval0,self.A_Dval,self.A_Dval0)
-        
         val += self.Aeta - self.A0;
         return val
 
