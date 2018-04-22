@@ -19,7 +19,8 @@ trials=1
 #command line arguments
 parser = argparse.ArgumentParser(description="Perform Gaussian Mixture Model Variational Bayesian clustering analysis on data")
 parser.add_argument('--data',help="File with the source data")
-parser.add_argument('-k',help="Specify number of components [for test data] (def 5)",default="5",type=float)
+parser.add_argument('-k',help="Specify number of components [for test data] (def 5)",default="5",type=int)
+parser.add_argument('-d',help="Dimension (def 2)",default="2",type=int)
 parser.add_argument('-s',help="Specify random seed",default="-1",type=int)
 parser.add_argument('-c',help="Number of components to try in model.(Default=k)",default="-1",type=int)
 parser.add_argument('-t',help="Number of trials.(Default="+str(trials)+")",default="-1",type=int)
@@ -37,7 +38,7 @@ else:seed=args.s
 print("seed=",seed)
 np.random.seed(seed)
 
-mdim=2
+mdim=args.d
 
 Npts=int(args.n)
 kcent=int(args.k)

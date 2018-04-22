@@ -12,6 +12,9 @@ import copy
 
 negl_wt=0.001
 EMtolfac=0.01
+UpdateTol=0.05
+gTol=0.001
+need_testmodel=True
 
 displayCounter=0
 displayEvery=4
@@ -324,6 +327,7 @@ class gmmvb:
         self.logLike=0
         #Now loop over the data for the rest of the terms and normalization
         for i in range(self.N):
+            if(self.g[i]<gTol):continue #Leave insignificantly hatgamma values unchanged for insignificantly overlapping data
             #First we compute log(gamma) as needed
             log_gamma=np.zeros(len(self.activeComponents))
             for k in range(len(self.activeComponents)):
@@ -354,10 +358,10 @@ class gmmvb:
                 j=self.activeComponents[k]
                 self.hatgamma[i,j]=gamma[k]*normfac
                 #print "i,j,hatgamma,gamma,normfac,g",i,j,self.hatgamma[i,j],gamma[k],normfac,self.g[i]
-            if(not self.have_g):self.have_g=True
-            self.updated_eta=False
-            self.updated_theta=False
-            self.updated_gamma=True
+        if(not self.have_g):self.have_g=True
+        self.updated_eta=False
+        self.updated_theta=False
+        self.updated_gamma=True
             
     def componentOverlap(self,j1,j2):
         #print("computing overlap:")
@@ -590,17 +594,17 @@ class gmmvb:
         self.hatgamma=newhatgamma
 
         self.Ncomp.append(None)
-        print("eta was:",self.eta)
+        #print("eta was:",self.eta)
         for i in range(5):self.eta[i]=np.append(self.eta[i],np.array([self.eta0[i]]),axis=0)
-        print("eta --> ",self.eta)
+        #print("eta --> ",self.eta)
         self.updated_theta=True
         self.updated_eta=False
         self.updated_gamma=False
-        print("After:");self.show()
+        #print("After:");self.show()
         self.expectationStep()
-        print("After(Ex):"); self.show()
+        #print("After(Ex):"); self.show()
         self.maximizationStep()
-        print("After(Mx):"); self.show()
+        #print("After(Mx):"); self.show()
         print("Split:Ncomp=",self.Ncomp)
         
 #probably don't need this...?
@@ -611,7 +615,7 @@ class gmmvb:
         self.maximizationStep()
         
         
-    def improveStructure(self,backend=None):
+    def improveStructure(self,updates,backend=None):
         #Like V2,  continues through, considering splits for each of
         #the whole (at call time) list of components
         #Other differences from V1 are:
@@ -638,6 +642,8 @@ class gmmvb:
         tolRelax=10
         tolOverlap=0.03
         jcount=0
+        last_updates=updates
+        updates=[]
         for j in updatelist:
             jcount+=1
             print ("\nTrying split "+str(jcount)+"/"+str(len(updatelist)))
@@ -647,35 +653,43 @@ class gmmvb:
             overs=[model.componentOverlap(j,k) for k in range(model.kappa)]
             print("overlaps=",overs)
             overs=np.array(overs)/(sum(overs)+1e-10)
+            metric=sum([overs[i] for i in last_updates])
+            if(metric<UpdateTol):
+                print("Skipping split test of component ",j," with metric ",metric)
+                continue
             active=[i for i in range(len(overs)) if overs[i]>tolOverlap]
             print (j,": overlaps =",overs)
             print ("-> active =",active)
             #Next we downselect to just the relevant points
             #jpoints=self.samplePoints(points,nSamp=nSamp,target=j,actives=active,w=w)
             #Work with a parallel test model (on the reduced set of points)
-            testmodel=copy.deepcopy(model)
-            testmodel.resetActive(active)
-            #testmodel.expectationStep()
-            newmodel=copy.deepcopy(testmodel)
+            newmodel=copy.deepcopy(model)
+            newmodel.resetActive(active)
+            if(need_testmodel):
+                testmodel=copy.deepcopy(newmodel)
             newmodel.splitComponent(j)
             newmodel.EMtol=EMtol*tolRelax
             newmodel.run_EM()
-            testmodel.EMtol=EMtol*tolRelax
-            testmodel.run_EM()
+            if(need_testmodel):
+                testmodel.EMtol=EMtol*tolRelax
+                testmodel.run_EM()
+                print ("testmodel=");testmodel.show()
+                print ("testmodel.F=",testmodel.F)
+
             #  compare new BIC to original clustering BIC [wrt all points]
             #tol-2 cycle
-            print ("testmodel=");testmodel.show()
-            print ("testmodel.F=",testmodel.F)
             print ("newmodel=");newmodel.show()
             print ("newmodel.F=",newmodel.F)
-            if(newmodel.F>testmodel.F and testmodel.F-newmodel.F<EMtol*tolRelax**2):#This is a close call continue EM with orig EMtol
+            if(need_testmodel):testF=testmodel.F
+            else:testF=model.F
+            if(newmodel.F>testF and testF-newmodel.F<EMtol*tolRelax**2):#This is a close call continue EM with orig EMtol
                 newmodel.EMtol=EMtol
-                testmodel.EMtol=EMtol
+                if(need_testmodel):testmodel.EMtol=EMtol
             #Run a second time for "trimming" [resets relative weights]
             newmodel.run_EM()
-            testmodel.run_EM()
+            if(need_testmodel):testmodel.run_EM()
             print ("Compare models")
-            print ("testmodel.F=",testmodel.F)
+            if(need_testmodel):print ("testmodel.F=",testmodel.F)
             print ("newmodel.F=",newmodel.F)
             print ("model.F=",model.F)
 
@@ -684,11 +698,15 @@ class gmmvb:
             print ("actives=",newmodel.activeComponents)
             print ("Fvals orig/new",model.F,newmodel.F)
             #print ("lposts orig/new",model.lpost,newmodel.lpost)
-            if(newmodel.F>model.F or testmodel.F>model.F):
+            if(need_testmodel):testF=testmodel.F
+            else:testF=model.F
+            if(newmodel.F>model.F or testF>model.F):
                 print ("Found improved model:")
-                if(newmodel.F>testmodel.F):
+                if(newmodel.F>testF):
                     print("New model is better")
                     model=newmodel
+                    updates.append(j)
+                    updates.append(model.kappa-1)
                 else:
                     print("Test model is better")
                     model=testmodel
@@ -713,9 +731,9 @@ class gmmvb:
                     newmodel.run_EM(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights,backend=backend)
                     if(newmodel.F>model.F and model.F-newmodel.F<EMtol*tolRelax**2):newmodel.EMtol=EMtol
                     newmodel.run_EM(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights,backend=backend)
-                
+
         print ("returning with Fval=",model.F)
-        return model
+        return model,updates
 
     def samplePoints(self,nSamp=1500,target=None,actives=None):
         #     nSamp   target # of samples for indicated compt
@@ -829,6 +847,7 @@ def compute_xgmmvb(points,backend=None):
     #model.run_EM(backend=backend)
     oldFval=model.F
     count=0
+    updates=[0]
     while(True):
         count+=1
         print ()
@@ -837,9 +856,10 @@ def compute_xgmmvb(points,backend=None):
         if(count>1):model.computeF()
         oldFval=model.F
         oldkappa=model.kappa
-        model=model.improveStructure(backend=backend)
+        model,updates=model.improveStructure(updates,backend=backend)
         t1=time.time()
         print ("improve model time =",t1-t0)
+        print ("kappa=",model.kappa,"  updates=",updates)
         print ()
         print ("============")
         model.show()
