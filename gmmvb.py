@@ -11,6 +11,8 @@ import scipy.special
 import copy
 
 negl_wt=0.001
+EMtolfac=0.01
+
 displayCounter=0
 displayEvery=4
 #class for a Gaussian mixture model
@@ -212,7 +214,7 @@ class gmmvb:
         self.F=None
         self.Falt=None
         self.like=None
-        self.EMtol=self.eta0[3]*.01
+        self.EMtol=self.eta0[3]*EMtolfac
         self.needFalt=False
         self.show()
         

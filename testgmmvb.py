@@ -28,6 +28,7 @@ parser.add_argument('--skip',help="Specify text list of columns to skip (comma s
 parser.add_argument('--down',help="Integer factor by which to downsample the data.")
 parser.add_argument('-p',help="doProjection",action='store_true')
 parser.add_argument('-x',help="Allow number of components to vary",action='store_true')
+parser.add_argument('--tol',help="Specify EMtol factor (def 0.01)",default="0.01",type=float)
 args=parser.parse_args()
 
 #set seed
@@ -45,7 +46,9 @@ if(args.c>0):ccomp=args.c
 if(args.t>0):trials=args.t
 parnames=None
 outname="test.pdf"
+
 if(args.p):gmmvb.doProjection=True
+gmmvb.EMtolfac=args.tol
 if(args.x):
     do_xgmmvb=True
     do_gmmvb=False
