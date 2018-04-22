@@ -21,6 +21,8 @@ parser = argparse.ArgumentParser(description="Perform Gaussian Mixture Model Var
 parser.add_argument('--data',help="File with the source data")
 parser.add_argument('-k',help="Specify number of components [for test data] (def 5)",default="5",type=float)
 parser.add_argument('-s',help="Specify random seed",default="-1",type=int)
+parser.add_argument('-c',help="Number of components to try in model.(Default=k)",default="-1",type=int)
+parser.add_argument('-t',help="Number of trials.(Default="+str(trials)+")",default="-1",type=int)
 parser.add_argument('-n',help="Specify approx number of sample points",default="500",type=float)
 parser.add_argument('--skip',help="Specify text list of columns to skip (comma separated, count from 1")
 parser.add_argument('--down',help="Integer factor by which to downsample the data.")
@@ -38,6 +40,9 @@ mdim=2
 
 Npts=int(args.n)
 kcent=int(args.k)
+ccomp=kcent
+if(args.c>0):ccomp=args.c
+if(args.t>0):trials=args.t
 parnames=None
 outname="test.pdf"
 if(args.p):gmmvb.doProjection=True
@@ -120,13 +125,16 @@ best_model=None
 best_lpost=None
 best_Fval=None
 pp = PdfPages(outname)
-    
+
+Fvals=[]
+models=[]
+times=[]
 for i in range(trials):
     if(do_gmmvb):
         start=time.time()
         niter=0
         #model=gmmvb.compute_gmmvb(points,2,pp)
-        model=gmmvb.compute_gmmvb(points,kcent)
+        model=gmmvb.compute_gmmvb(points,ccomp)
         #model=gmm.compute_gmmvb(points,2,"screen")
         dtime=time.time()-start
         print ("Npts=",Npts)
@@ -137,6 +145,9 @@ for i in range(trials):
         print ("----------")
         time0=dtime
         Fval=model.F
+        Fvals.append(Fval)
+        models.append(model)
+        times.append(dtime)
         if(best_model==None or Fval>best_Fval):
             best_Fval=Fval
             best_model=model
@@ -153,21 +164,24 @@ for i in range(trials):
         print ("----------")
         time0=dtime
         Fval=model.F
+        Fvals.append(Fval)
+        models.append(model)
+        times.append(dtime)
         if(best_model==None or Fval>best_Fval):
             best_Fval=Fval
             best_model=model
 
-#print "sigmas="
-#for s in best_model.sigma:
-#    print np.matrix(s)
-    
-#print "inverse sigmas="
-#for s in best_model.sigmainv:
-#    print np.matrix(s)
+
+print ("\nModels:")
+for f,m in zip(Fvals,models):
+    print("  F=",f,"  W=",m.Ncomp)
+print ("mean time =",np.mean(times))
+print ("best model F=",best_model.F)
+print ("weights=",best_model.Ncomp)
+
     
 if(do_dump ):
     #pp = PdfPages(outname)
-    print ("best model F=",best_model.F)
     clusters=best_model.draw_clusters()
     #print("ccov0=",ccov0)
     for ix in range(mdim-1):

@@ -214,6 +214,7 @@ class gmmvb:
         self.like=None
         self.EMtol=self.eta0[3]*.01
         self.needFalt=False
+        self.show()
         
     def compute_derived_theta(self):
         #This operates over all components in vector form
@@ -226,16 +227,15 @@ class gmmvb:
         
     def show(self):
         print ("Variational Bayesian Gaussian mixture model: ",self.kappa,"components")
-        #print "eta0:",self.eta[0]
-        print ("eta1:",self.eta[1])
-        print ("eta2:",self.eta[2])
-        print ("eta3:",self.eta[3])
-        print ("eta4:",self.eta[4])
-        print ("th0    ",self.nu[0],self.beta[0],self.lamb[0],self.rho[0],self.logdetV[0])
-        print ("th1    ",self.nu[1],self.beta[1],self.lamb[1],self.rho[1],self.logdetV[1])
-        print ("th2    ",self.nu[2],self.beta[2],self.lamb[2],self.rho[2],self.logdetV[2])
-        print ("th3    ",self.nu[3],self.beta[3],self.lamb[3],self.rho[3],self.logdetV[3])
-        print ("th4    ",self.nu[4],self.beta[4],self.lamb[4],self.rho[4],self.logdetV[4])
+        #print ("eta0:",self.eta[0])
+        #print ("eta1:",self.eta[1])
+        #print ("eta2:",self.eta[2])
+        #print ("eta3:",self.eta[3])
+        #print ("eta4:",self.eta[4])
+        print ("th: nu,beta,lamb=",self.nu,self.beta,self.lamb,"\n rho=",self.rho,"\n logdetVnu=",self.logdetV+self.D*np.log(self.nu))
+        #print ("Ncomp=",self.Ncomp)
+        print ("partitions=",np.sum(self.hatgamma,axis=0))
+        #print ("min/max:sum(hatgamma[i,:])=",min(np.sum(self.hatgamma,axis=1)),max(np.sum(self.hatgamma,axis=1)))
         
     def update_Aeta(self):
         self.Aeta,self.A_comp,self.A_Dval=compute_Aeta(self.D,self.nu,self.beta,self.lamb,self.logdetV)
@@ -453,10 +453,11 @@ class gmmvb:
                 
 
     def run_EM(self,backend=None,MaxSteps=800):
+        assert(self.updated_theta)
         Fval=-float('inf')
         #self.expectationStep()
         print ("active =",self.activeComponents)
-        every=1
+        every=100
         Ncomp_old=np.array(self.Ncomp)
         dhgamma=None
         oldhgamma=self.hatgamma.copy()
@@ -496,7 +497,7 @@ class gmmvb:
                 if(self.needFalt):print (count,"altFval=",altFval)
                 print (count,"Fval=",Fval)
                 print (count,"Ncomp=",self.Ncomp)
-                print (count,"lndet=",self.logdetV)
+                print (count,"lndet=",self.logdetV+self.D*np.log(self.nu))
             Ncomp_old=Ncomp.copy()
             #if(count/every>3):every*=2
             #print "mu1=",self.mu[1]
@@ -507,7 +508,7 @@ class gmmvb:
                     clusters=self.draw_clusters()
                     self.plot(clusters,0,1,None,backend)
                 displayCounter+=1
-            print ("test:",Fval-Fvalold,"<",self.EMtol)
+            #print ("test:",Fval-Fvalold,"<",self.EMtol)
             #if(Fval-Fvalold<self.EMtol):
             #break
             if(dNcomp2<self.EMtol):
@@ -518,14 +519,15 @@ class gmmvb:
 
         if(self.needFalt):print ("best Fval/alt=",Fval,altFval)
         else: print ("best Fval",Fval)
-        for j in range(self.kappa):
-            #print("inv(Vnu)=",np.linalg.pinv(self.Vnu[j]))
-            logdetcov  = -np.linalg.slogdet( self.Vnu[j] )[1]
-            logdetcov0  = -np.linalg.slogdet( self.Vnu0[j] )[1]
-            print ("checkF(",j,"):",checkF(logdetcov,logdetcov0,self.D,self.Ncomp[j],self.nu0[j],self.beta0[j]))
-            print ("Fcomp(",j,"):",self.A_comp[j]-self.A_comp0[j]-self.Ncomp[j]*self.D/2.0*log2pi)
-            #print("coeff=",-1-logdetcov+self.D*math.log(2*math.pi))
-            #print ("largeN: F->",self.Ncomp[j]/2*(-1-logdetcov+self.D*log2pi)-(self.D/4.)*(self.D+3)*math.log(self.Ncomp[j]))
+        if(False):
+            for j in range(self.kappa):
+                #print("inv(Vnu)=",np.linalg.pinv(self.Vnu[j]))
+                logdetcov  = -np.linalg.slogdet( self.Vnu[j] )[1]
+                logdetcov0  = -np.linalg.slogdet( self.Vnu0[j] )[1]
+                print ("checkF(",j,"):",checkF(logdetcov,logdetcov0,self.D,self.Ncomp[j],self.nu0[j],self.beta0[j]))
+                print ("Fcomp(",j,"):",self.A_comp[j]-self.A_comp0[j]-self.Ncomp[j]*self.D/2.0*log2pi)
+                #print("coeff=",-1-logdetcov+self.D*math.log(2*math.pi))
+                #print ("largeN: F->",self.Ncomp[j]/2*(-1-logdetcov+self.D*log2pi)-(self.D/4.)*(self.D+3)*math.log(self.Ncomp[j]))
                    
     def splitComponent(self,j):
         #This is a crucial element of the improve-structure process
@@ -540,6 +542,10 @@ class gmmvb:
         #  -The set a new component mean x1 reflected opposite the original
         #    -This component will be added on the end
         #  -The rest of the theta params are defined as in Eq 34 \ref{eq:split}
+        print("split:entry:Ncomp=",self.Ncomp)
+        print("Before:")
+        self.show()
+        assert(self.updated_theta)
         x0s=[sampleComponentPosteriorPredictive(self.Vinv[j],self.nu[j],self.rho[j],self.beta[j]) for i in range(3)]
         dists=[np.linalg.norm(x0-self.rho[j]) for x0 in x0s]
         maxdist=max(dists)
@@ -568,22 +574,32 @@ class gmmvb:
         self.logdetV[j]= logdetVval;
         actives=self.activeComponents+[self.kappa]
         self.kappa+=1
-        self.hatgamma=np.zeros((self.N,self.kappa))
+        #self.hatgamma=np.zeros((self.N,self.kappa))
         self.A_comp = [None]*self.kappa
         self.activeComponents=actives.copy()
+        print("Split:actives=",self.activeComponents)
         #We don't call resetActive because, in this case g[i] specifically should not change because of the split
+        #Update prior info
+        self.nu0,self.beta0,self.lamb0,self.rho0,self.Vinv0,self.Vnu0,self.logdetV0=compute_derived_theta(self.kappa,self.D,[np.array([self.eta0[i]]*self.kappa) for i in range(5)])
+        self.A0,self.A_comp0,self.A_Dval0=compute_Aeta(self.D,self.nu0,self.beta0,self.lamb0,self.logdetV0)
         self.update_Aeta()
-        self.A0=self.Aeta
-        self.update_Aeta()
-        self.A_comp0=[self.A_comp[k] for k in range(self.kappa)]
-        self.A_Dval0=self.A_Dval.copy()
-        self.A0=self.Aeta.copy()
-        #randomly initialize rhos from data point
-        self.rho=np.array([Y[i] for i in np.random.choice(self.N,self.kappa)])
-        self.hatgamma=np.zeros((self.N,self.kappa))
-        self.F=None
-        self.Falt=None
-        self.like=None
+        newhatgamma=np.zeros((self.N,self.kappa))
+        for k in range(self.kappa-1): newhatgamma[:,k]=self.hatgamma[:,k]
+        self.hatgamma=newhatgamma
+
+        self.Ncomp.append(None)
+        print("eta was:",self.eta)
+        for i in range(5):self.eta[i]=np.append(self.eta[i],np.array([self.eta0[i]]),axis=0)
+        print("eta --> ",self.eta)
+        self.updated_theta=True
+        self.updated_eta=False
+        self.updated_gamma=False
+        print("After:");self.show()
+        self.expectationStep()
+        print("After(Ex):"); self.show()
+        self.maximizationStep()
+        print("After(Mx):"); self.show()
+        print("Split:Ncomp=",self.Ncomp)
         
 #probably don't need this...?
     def update(self):
@@ -610,6 +626,9 @@ class gmmvb:
         replacements=[]
         self.expectationStep()
         self.maximizationStep()
+        self.update_Aeta()
+        self.F=self.computeF()
+        #print("****",self.F)
         updatelist=np.random.permutation(self.kappa)
         model=copy.deepcopy(self)
         #model.evaluate(points)
@@ -632,20 +651,20 @@ class gmmvb:
             #Next we downselect to just the relevant points
             #jpoints=self.samplePoints(points,nSamp=nSamp,target=j,actives=active,w=w)
             #Work with a parallel test model (on the reduced set of points)
-            testmodel=copy.deepcopy(self)
+            testmodel=copy.deepcopy(model)
             testmodel.resetActive(active)
-            testmodel.expectationStep()
+            #testmodel.expectationStep()
             newmodel=copy.deepcopy(testmodel)
             newmodel.splitComponent(j)
             newmodel.EMtol=EMtol*tolRelax
-            newmodel.run_EM_MAP()
+            newmodel.run_EM()
             testmodel.EMtol=EMtol*tolRelax
-            testmodel.run_EM_MAP()
+            testmodel.run_EM()
             #  compare new BIC to original clustering BIC [wrt all points]
             #tol-2 cycle
-            print ("testmodel=",testmodel.show())
+            print ("testmodel=");testmodel.show()
             print ("testmodel.F=",testmodel.F)
-            print ("newmodel=",newmodel.show())
+            print ("newmodel=");newmodel.show()
             print ("newmodel.F=",newmodel.F)
             if(newmodel.F>testmodel.F and testmodel.F-newmodel.F<EMtol*tolRelax**2):#This is a close call continue EM with orig EMtol
                 newmodel.EMtol=EMtol
@@ -653,30 +672,38 @@ class gmmvb:
             #Run a second time for "trimming" [resets relative weights]
             newmodel.run_EM()
             testmodel.run_EM()
+            print ("Compare models")
+            print ("testmodel.F=",testmodel.F)
+            print ("newmodel.F=",newmodel.F)
+            print ("model.F=",model.F)
 
             #newmodel.update(points)  
-            newmodel.computeF()
+            #newmodel.computeF()
             print ("actives=",newmodel.activeComponents)
             print ("Fvals orig/new",model.F,newmodel.F)
-            print ("lposts orig/new",model.lpost,newmodel.lpost)
-            if(newmodel.F>model.F):
+            #print ("lposts orig/new",model.lpost,newmodel.lpost)
+            if(newmodel.F>model.F or testmodel.F>model.F):
                 print ("Found improved model:")
-                #newmodel.show()
-                newmodel.EMtol=EMtol
-                model=copy.deepcopy(newmodel)
+                if(newmodel.F>testmodel.F):
+                    print("New model is better")
+                    model=newmodel
+                else:
+                    print("Test model is better")
+                    model=testmodel
+                model.EMtol=EMtol
                 #we accept the newmodel as model
                 #we don't run full EM, but we do need to update w and we
                 #(do?) update the model params
+                model.resetActive(range(model.kappa))
                 model.expectationStep()#update w
                 model.maximizationStep()
-                model.computeF()
                 print ("evaluated model: F=",model.F)
                 if(True):
-                    phisum=np.sum(self.phi)
-                    print (" [before] =",np.array2string(model.Ncomp,formatter={'float_kind':lambda x: "%.5f" % x}))
-                    print ("lndetV=",model.lndetV)
-                    print ("model.rho =\n",np.array2string(model.rho,formatter={'float_kind':lambda x: "%.3f" % x}))
-                print ("model.phi=",np.array2string(model.Ncomp,formatter={'float_kind':lambda x: "%.5f" % x}))
+                    phisum=np.sum(self.Ncomp)
+                    print (" [before] =",np.array2string(np.array(model.Ncomp),formatter={'float_kind':lambda x: "%.5f" % x}))
+                    print ("lndetV=",model.logdetV)
+                    print ("model.rho =\n",np.array2string(np.array(model.rho),formatter={'float_kind':lambda x: "%.3f" % x}))
+                print ("model.phi=",np.array2string(np.array(model.Ncomp),formatter={'float_kind':lambda x: "%.5f" % x}))
                 if(backend is not None):#do it all over for display purposes
                     #Need to rework this.....
                     newmodel=gmm(newmu,model.kappa,newsigma,newphi)
@@ -805,7 +832,7 @@ def compute_xgmmvb(points,backend=None):
         print ()
         print ("Beginning xgmm cycle",count)
         t0=time.time()
-        model.computeF()
+        if(count>1):model.computeF()
         oldFval=model.F
         oldkappa=model.kappa
         model=model.improveStructure(backend=backend)
@@ -813,7 +840,7 @@ def compute_xgmmvb(points,backend=None):
         print ("improve model time =",t1-t0)
         print ()
         print ("============")
-        print (model.show())
+        model.show()
         model.run_EM(backend=backend)
         model.computeF()
         print ("Fval/old=",model.F,oldFval)
