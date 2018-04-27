@@ -1,4 +1,4 @@
-#This file implements a Gaussian Mixture Model via Expectation-Maximation for clustering
+#This file implements a variational Bayesian Gaussian Mixture Model for clustering
 import numpy as np
 import math
 import matplotlib.pyplot as plt
@@ -9,12 +9,14 @@ import time
 import scipy
 import scipy.special
 import copy
+import time
 
-negl_wt=0.001
+emptyCut=300.0
 EMtolfac=0.01
-UpdateTol=0.05
+UpdateTol=0.01
 gTol=0.001
 need_testmodel=True
+do_stashing=False #First test of this worked mostly but small numerical differences and only 3% time saving.  Maybe do more experiments
 
 displayCounter=0
 displayEvery=4
@@ -50,7 +52,7 @@ def checkF(logdetcov,logdetcov0,D,N,nu0,beta0):
     #print("nu,lnu,ldc=",nu,math.log(nu),logdetcov)
     t1=0.5*nu*(-logdetcov-D*math.log(nu))
     t2=-0.5*nu0*(-logdetcov0-D*math.log(nu0))
-    t3=-0.5*N*D*math.log(math.pi)
+    t3=-0.5*N*D*math.logpi
     t4=-0.5*D*math.log(1+N/beta0)
     t5=lnGammaDhalf(nu,D)-lnGammaDhalf(nu0,D)
     #print("checkFparts:",t1,t2,t3,t4,t5)
@@ -191,6 +193,8 @@ def ellipse(rho,cov,ic,ix,iy,siglev=2,N_thetas=60):
         
 class gmmvb:
     def __init__(self,Y,kappa):
+        self.have_stash=False
+        self.needFalt=False
         self.Y=np.array(Y)
         self.N=len(Y)
         self.Y2=np.array([np.outer(self.Y[i,:],self.Y[i,:]) for i in range(self.N)])
@@ -198,7 +202,7 @@ class gmmvb:
         self.D=len(Y[0])
         self.eta0=get_uninformative_eta0(self.kappa,self.D,self.Y)
         self.Ncomp=[None]*self.kappa
-        self.gammabar = np.zeros((self.N,self.kappa))
+        if(self.needFalt):self.gammabar = np.zeros((self.N,self.kappa))
         self.resetActive(range(self.kappa))
         #save prior theta stuff
         self.nu0,self.beta0,self.lamb0,self.rho0,self.Vinv0,self.Vnu0,self.logdetV0=compute_derived_theta(self.kappa,self.D,[np.array([self.eta0[i]]*self.kappa) for i in range(5)])
@@ -214,11 +218,12 @@ class gmmvb:
         #randomly initialize rhos from data point
         self.rho=np.array([Y[i] for i in np.random.choice(self.N,self.kappa)])
         self.hatgamma=np.zeros((self.N,self.kappa))
+        self.have_hatgamma=False
+        self.request_stash=False
         self.F=None
         self.Falt=None
         self.like=None
         self.EMtol=self.eta0[3]*EMtolfac
-        self.needFalt=False
         self.show()
         
     def compute_derived_theta(self):
@@ -230,16 +235,16 @@ class gmmvb:
         self.updated_theta=True
         self.updated_Aeta=False
         
-    def show(self):
-        print ("Variational Bayesian Gaussian mixture model: ",self.kappa,"components")
+    def show(self,lead="  "):
+        print (lead,"Variational Bayesian Gaussian mixture model: ",self.kappa,"components")
         #print ("eta0:",self.eta[0])
         #print ("eta1:",self.eta[1])
         #print ("eta2:",self.eta[2])
         #print ("eta3:",self.eta[3])
         #print ("eta4:",self.eta[4])
-        print ("th: nu,beta,lamb=",self.nu,self.beta,self.lamb,"\n rho=",self.rho,"\n logdetVnu=",self.logdetV+self.D*np.log(self.nu))
-        #print ("Ncomp=",self.Ncomp)
-        print ("partitions=",np.sum(self.hatgamma,axis=0))
+        print (lead,"th: nu,beta,lamb=",self.nu,self.beta,self.lamb,"\n",lead," rho=",self.rho,"\n",lead," logdetVnu=",self.logdetV+self.D*np.log(self.nu))
+        #print (lead,"Ncomp=",self.Ncomp)
+        print (lead,"partitions=",np.sum(self.hatgamma,axis=0))
         #print ("min/max:sum(hatgamma[i,:])=",min(np.sum(self.hatgamma,axis=1)),max(np.sum(self.hatgamma,axis=1)))
         
     def update_Aeta(self):
@@ -253,17 +258,20 @@ class gmmvb:
         #Eq 29 \ref{eq:computeF}
         assert self.updated_theta
         assert self.updated_Aeta
-        N=self.N
+        if(self.have_stash):N=self.stash_N
+        else:N=self.N
         D=self.D
         val0  = -N*D/2.0*log2pi
-        glogg= sum([self.hatgamma[i,j]*math.log(1e-300+self.hatgamma[i,j]) for j in range(self.kappa) for i in range(N)])
+        glogg= sum([self.hatgamma[i,j]*math.log(1e-300+self.hatgamma[i,j]) for j in range(self.kappa) for i in range(self.N)])
+        if(self.have_stash):glogg+=self.stash_glogg
         if(False):
-            for i in range(N):
+            for i in range(self.N):
                 gvec=[self.hatgamma[i,j]*math.log(1e-300+self.hatgamma[i,j]) for j in range(self.kappa)]
                 #print min(gvec)
                 if(min(self.hatgamma[i])>1e-4):print ("glog:",min(self.hatgamma[i]),gvec,self.hatgamma[i,:],self.Y[i])
         val = val0-glogg
         val += self.Aeta - self.A0;
+        print(-glogg,val0,val)
         return val
 
     def computeFalt(self):
@@ -299,6 +307,7 @@ class gmmvb:
         return like + (  Dterm + Vterm + nuterm + betaterm ) 
     
     def resetActive(self,newActive):
+        self.stashRestore()
         self.activeComponents=newActive
         self.have_g=False;
         
@@ -312,22 +321,29 @@ class gmmvb:
         #If we need to compute g[i] we do that now
         #Note that we are assuming that the maximization hasn't been called
         #since activeComponents was updated
+        #print("Entering expectation Step: Active=",self.activeComponents)
         assert self.updated_theta
-        if(not self.have_g):
+        if( not self.have_g ):
+            assert(not self.have_stash)
             if(len(self.activeComponents)<self.kappa):
-                self.g=[sum([self.hatgamma[i,j] for j in self.activeComponents]) for i in range(self.N)]
+                #print("recomputing g")
+                #We define this using the *inactive components* since we sometimes delete one of the actives
+                self.g=np.array([1.0 - sum([self.hatgamma[i,j] for j in range(self.kappa) if not j in self.activeComponents ]) for i in range(self.N)])
             else:
-                self.g=[1.0]*self.N
+                self.g=np.ones(self.N)
             self.have_g=True
+        elif( self.request_stash ):
+            self.stashInactiveData()
+        
         #Pre-compute data-independent terms from Eq(24) from notes
         barlamb=sum(self.lamb)
-        log_gamma0=scipy.special.digamma(self.lamb)-scipy.special.digamma(barlamb)-self.D*math.log(math.pi)/2
+        log_gamma0=scipy.special.digamma(self.lamb)-scipy.special.digamma(barlamb)-self.D*logpi/2
         for j in self.activeComponents:
             log_gamma0[j] += ( self.logdetV[j] + digammaDhalf(self.nu[j],self.D) - self.D/self.beta[j] ) / 2.0
         self.logLike=0
         #Now loop over the data for the rest of the terms and normalization
         for i in range(self.N):
-            if(self.g[i]<gTol):continue #Leave insignificantly hatgamma values unchanged for insignificantly overlapping data
+            if(self.g[i]<gTol):continue #Leave insignificant hatgamma values unchanged for insignificantly overlapping data
             #First we compute log(gamma) as needed
             log_gamma=np.zeros(len(self.activeComponents))
             for k in range(len(self.activeComponents)):
@@ -364,6 +380,7 @@ class gmmvb:
         self.updated_gamma=True
             
     def componentOverlap(self,j1,j2):
+        assert(not self.have_stash)
         #print("computing overlap:")
         #for i in range(self.N):
         #    print(" ",i,self.hatgamma[i,j1],self.hatgamma[i,j2])
@@ -381,16 +398,17 @@ class gmmvb:
         yNcomp=[None]*self.kappa
         yyNcomp=[None]*self.kappa
         for j in self.activeComponents:
-            #print "shapes: ",self.hatgamma[:,j].shape,self.Y.shape,self.Y2.shape
             self.Ncomp[j]=np.sum(self.hatgamma[:,j])
-            #print " y shape ",(self.hatgamma[:,j]*self.Y.T).T.shape
             yNcomp[j]=np.sum((self.hatgamma[:,j]*self.Y.T).T,0)
-            #print " yy shape ",(self.hatgamma[:,j]*self.Y2.T).T.shape
             yyNcomp[j]=np.sum((self.hatgamma[:,j]*self.Y2.T).T,0)
-            #print "->shapes: ",yNcomp[j].shape,yyNcomp[j].shape
-            #print j,"eta[0]:",self.eta0[j]
-            #print j,"yy:",yyNcomp[j]
-            
+            if(self.have_stash):
+                self.Ncomp[j]+=self.stash_Ncomp[j]
+                yNcomp[j]+=self.stash_yNcomp[j]
+                yyNcomp[j]+=self.stash_yyNcomp[j]
+        #print("Ncomp=",self.Ncomp)
+        #print("yNcomp=",yNcomp)
+        #print("yyNcomp=",yyNcomp)
+        
         for j in self.activeComponents:
             #print "j,Ncomp,yNcomp,eigvals(yyNcomp-brr)",j,self.Ncomp[j],yNcomp[j],np.linalg.eigvalsh(yyNcomp[j]-np.outer(yNcomp[j],yNcomp[j])/self.Ncomp[j])
             self.eta[0][j]=self.eta0[0]+yyNcomp[j]
@@ -398,7 +416,7 @@ class gmmvb:
             self.eta[2][j]=self.eta0[2]+yNcomp[j]
             self.eta[3][j]=self.eta0[3]+self.Ncomp[j]
             self.eta[4][j]=self.eta0[4]+self.Ncomp[j]
-            #print "eta0=",self.eta[0][j]
+            #print "eta1=",self.eta[1][j]
         self.updated_eta=True
         self.updated_gamma=False
         self.compute_derived_theta()
@@ -410,6 +428,7 @@ class gmmvb:
             #print ("rho-sMean:",self.rho[j]-sMean)
 
     def project_partitions(self, dhgamma, dhgammaP1):
+        assert(not self.have_stash)
         self.update_Aeta()
         Fval=self.computeF()
         #Here we take a step away from strict EM and try to accelerated
@@ -427,10 +446,9 @@ class gmmvb:
         #Finally we have to assure that sum(deltahgamma(i))=0. To realize this we just work with
         #a common mean of the  ratio for all components then deltahgamma 
         #will be a direct rescaling of dhgamma[0].
-        print("Trying projection")
-        print("hatgamma shape=",self.hatgamma.shape)
+        #print("Trying projection")
         self.savehgamma=self.hatgamma
-        alpha=0.75
+        alpha=0.25
         fac=alpha*(1-alpha/2)
         ratios=dhgamma/dhgammaP1
         for i in range(self.N):
@@ -452,58 +470,63 @@ class gmmvb:
             self.maximizationStep()
             return False
         print("Succeeded")
-        print("hatgamma shape=",self.hatgamma.shape)
 
         return True
                     
-                
-
     def run_EM(self,backend=None,MaxSteps=800):
         assert(self.updated_theta)
         Fval=-float('inf')
         #self.expectationStep()
-        print ("active =",self.activeComponents)
+        
+        print ("Running EM active =",self.activeComponents)
+        start=time.time()
+
         every=100
         Ncomp_old=np.array(self.Ncomp)
         dhgamma=None
-        oldhgamma=self.hatgamma.copy()
+        if(doProjection):oldhgamma=self.hatgamma.copy()
         for count in range(MaxSteps):
             self.expectationStep()
             dhgammaP1=dhgamma
-            if(oldhgamma is not None):dhgamma=self.hatgamma-oldhgamma
+            if(doProjection and oldhgamma is not None ):dhgamma=self.hatgamma-oldhgamma
             if(self.needFalt):altFval=self.computeFalt()
-            if(doProjection and dhgammaP1 is not None):
-                self.maximizationStep()
-                if self.project_partitions(dhgamma,dhgammaP1):
-                    oldhgamma=None
-                    dhgamma=None
+            if(doProjection):
+                if(dhgammaP1 is not None):
+                    self.maximizationStep()
+                    if self.project_partitions(dhgamma,dhgammaP1):
+                        oldhgamma=None
+                        dhgamma=None
+                    else:
+                        oldhgamma=self.hatgamma.copy()
                 else:
+                    self.maximizationStep()
                     oldhgamma=self.hatgamma.copy()
             else:
                 self.maximizationStep()
-                oldhgamma=self.hatgamma.copy()
             Ncomp=np.array(self.Ncomp)
             if(count>0):
                 dNcomp = Ncomp-Ncomp_old
                 dNcomp2=np.linalg.norm(dNcomp)**2
-            else: dNcomp2=self.N**2
+            else:
+                if(self.have_stash):dNcomp2=self.stash_N**2
+                else:dNcomp2=self.N**2
             
             #if self.activeComponents is not None:
             #    jlist=self.activeComponents
             #else:
             #    jlist=range(self.kappa)
-            Fvalold=Fval
-            self.update_Aeta()
-            Fval=self.computeF()
+            #Fvalold=Fval
             if(False and self.activeComponents is not None):
                 for j in self.activeComponents: print (" mu[",j,"]=",self.mu[j])
             if(count%every==0):
                 if(count>0):print (count,"dNcomp=",dNcomp2,Ncomp-Ncomp_old)
                 #for k in self.activeComponents:print "rho",k,self.rho[k],self.Ncomp[k],self.logdetV[k],self.logdetV[k]+math.log((1+1.0/self.beta[k])/max([1,self.nu[k]-self.D-1]))*self.D,self.beta[k],"\n Sigma-eigvals",np.linalg.eigvalsh(self.Vinv[k]*((1+1.0/self.beta[k])/max([1,self.nu[k]-self.D-1])))
                 if(self.needFalt):print (count,"altFval=",altFval)
+                self.update_Aeta()
+                Fval=self.computeF()
                 print (count,"Fval=",Fval)
                 print (count,"Ncomp=",self.Ncomp)
-                print (count,"lndet=",self.logdetV+self.D*np.log(self.nu))
+                #print (count,"lndet=",self.logdetV+self.D*np.log(self.nu))
             Ncomp_old=Ncomp.copy()
             #if(count/every>3):every*=2
             #print "mu1=",self.mu[1]
@@ -521,6 +544,8 @@ class gmmvb:
                 break
         self.updated_gamma=True
         if(self.needFalt):altFval=self.computeFalt()
+        self.update_Aeta()
+        Fval=self.computeF()
         self.F=Fval
 
         if(self.needFalt):print ("best Fval/alt=",Fval,altFval)
@@ -534,7 +559,66 @@ class gmmvb:
                 print ("Fcomp(",j,"):",self.A_comp[j]-self.A_comp0[j]-self.Ncomp[j]*self.D/2.0*log2pi)
                 #print("coeff=",-1-logdetcov+self.D*math.log(2*math.pi))
                 #print ("largeN: F->",self.Ncomp[j]/2*(-1-logdetcov+self.D*log2pi)-(self.D/4.)*(self.D+3)*math.log(self.Ncomp[j]))
-                   
+        dtime=time.time()-start
+        print(" count=",count)
+        print("               EM time:",dtime)
+        
+    def stashInactiveData(self):
+        #This is an experimental idea to improve efficiency for large N cases
+        #If there are many N which are not significant for the activeComponents
+        #then we waste some time e.g. in the maximization step in working with
+        #them.  Here we identify them and save the relevant info about them.
+        assert(not self.have_stash)
+        stash_map=[ i for i in range(self.N) if self.g[i]>=gTol ]
+        self.stash_map=stash_map
+        self.stash_Y=self.Y.copy()
+        self.Y=self.Y[stash_map]
+        self.stash_Y2=self.Y2.copy()
+        self.Y2=self.Y2[stash_map]
+        self.stash_N=self.N
+        self.N=len(self.Y)
+        print("stashing down to N=",self.N)
+        self.stash_hatgamma=self.hatgamma.copy()
+        self.hatgamma=self.hatgamma[stash_map]
+        self.stash_g=self.g.copy()
+        self.g=self.g[stash_map]
+        self.stash_Ncomp=[None]*self.kappa
+        self.stash_yNcomp=[None]*self.kappa
+        self.stash_yyNcomp=[None]*self.kappa
+        self.stash_glogg=sum([self.stash_hatgamma[i,j]*math.log(1e-300+self.stash_hatgamma[i,j]) for j in range(self.kappa) for i in range(self.stash_N)])-sum([self.hatgamma[i,j]*math.log(1e-300+self.hatgamma[i,j]) for j in range(self.kappa) for i in range(self.N)])
+        for j in self.activeComponents:
+            #print "shapes: ",self.hatgamma[:,j].shape,self.Y.shape,self.Y2.shape
+            self.stash_Ncomp[j]=np.sum(self.stash_hatgamma[:,j])-np.sum(self.hatgamma[:,j])
+            #print " y shape ",(self.hatgamma[:,j]*self.Y.T).T.shape
+            self.stash_yNcomp[j]=np.sum((self.stash_hatgamma[:,j]*self.stash_Y.T).T,0)-np.sum((self.hatgamma[:,j]*self.Y.T).T,0)
+            #print " yy shape ",(self.hatgamma[:,j]*self.Y2.T).T.shape
+            self.stash_yyNcomp[j]=np.sum((self.stash_hatgamma[:,j]*self.stash_Y2.T).T,0)-np.sum((self.hatgamma[:,j]*self.Y2.T).T,0)
+            #print "->shapes: ",yNcomp[j].shape,yyNcomp[j].shape
+        self.have_stash=True
+        self.request_stash=False
+
+    def stashRestore(self):
+        #This is an experimental idea to improve efficiency for large N cases
+        #If there are many N which are not significant for the activeComponents
+        #then we waste some time e.g. in the maximization step in working with
+        #them.  Here we identify them and save the relevant info about them.
+        self.have_g=False
+        self.have_hatgamma=False
+        if( not self.have_stash):return
+        stash_map=self.stash_map
+        self.Y=self.stash_Y
+        self.Y2=self.stash_Y2
+        self.N=len(self.Y)
+        #for i in range(len(stash_map)):
+        #    self.stash_hatgamma[stash_map[i]]=self.hatgamma[i]
+        #    self.stash_g[stash_map[i]]=self.g[i]
+        #self.hatgamma=self.stash_hatgamma
+        #self.g=self.stash_g
+        self.hatgamma=np.zeros((self.N,self.kappa))
+        self.have_stash=False
+        #self.have_g=False
+        #self.have_hatgamma=False
+        
     def splitComponent(self,j):
         #This is a crucial element of the improve-structure process
         #A component is split into two new ones
@@ -549,9 +633,9 @@ class gmmvb:
         #    -This component will be added on the end
         #  -The rest of the theta params are defined as in Eq 34 \ref{eq:split}
         print("split:entry:Ncomp=",self.Ncomp)
-        print("Before:")
-        self.show()
+        #print("Before split:");self.show()
         assert(self.updated_theta)
+        assert(not self.have_stash)
         x0s=[sampleComponentPosteriorPredictive(self.Vinv[j],self.nu[j],self.rho[j],self.beta[j]) for i in range(3)]
         dists=[np.linalg.norm(x0-self.rho[j]) for x0 in x0s]
         maxdist=max(dists)
@@ -592,6 +676,7 @@ class gmmvb:
         newhatgamma=np.zeros((self.N,self.kappa))
         for k in range(self.kappa-1): newhatgamma[:,k]=self.hatgamma[:,k]
         self.hatgamma=newhatgamma
+        self.have_hatgamma=False
 
         self.Ncomp.append(None)
         #print("eta was:",self.eta)
@@ -606,6 +691,50 @@ class gmmvb:
         self.maximizationStep()
         #print("After(Mx):"); self.show()
         print("Split:Ncomp=",self.Ncomp)
+        if(do_stashing):self.request_stash=True
+        
+    def deleteComponent(self,j):
+        #In practice, sometimes the EM algortihm seems to get stuck on a local optimum with an effectively empty component
+        #This routine eliminates a target component from the model. Some of this is trivial, but the
+        
+        print("delete:entry:Ncomp=",self.Ncomp)
+        #print("Before:")
+        #self.show()
+        assert(self.updated_theta)
+        self.rho = np.delete(self.rho,j,0)
+        self.nu = np.delete(self.nu,j,0)
+        self.beta = np.delete(self.beta,j,0)
+        self.Vinv = np.delete(self.Vinv,j,0)
+        self.Vnu = np.delete(self.Vnu,j,0)
+        self.logdetV = np.delete(self.logdetV,j,0)
+        self.lamb = np.delete(self.lamb,j,0)
+        actives=[ k if k<j else k-1 for k in self.activeComponents if k!=j ]
+        self.kappa-=1
+        del self.A_comp[j]
+        #Update prior info
+        self.nu0,self.beta0,self.lamb0,self.rho0,self.Vinv0,self.Vnu0,self.logdetV0=compute_derived_theta(self.kappa,self.D,[np.array([self.eta0[i]]*self.kappa) for i in range(5)])
+        self.A0,self.A_comp0,self.A_Dval0=compute_Aeta(self.D,self.nu0,self.beta0,self.lamb0,self.logdetV0)
+        self.update_Aeta()
+        self.hatgamma = np.delete(self.hatgamma,j,axis=1)
+        self.have_hatgamma=False
+
+        ##
+        del self.Ncomp[j]
+        if(self.needFalt):self.gammabar = np.zeros((self.N,self.kappa))
+        #print("eta was:",self.eta)
+        for i in range(5):self.eta[i] = np.delete(self.eta[i],j,axis=0)
+        #print("eta --> ",self.eta)
+        self.updated_theta=True
+        self.updated_eta=False
+        self.updated_gamma=False
+        #print("After:");self.show()
+        self.resetActive(range(self.kappa))  #We need to allow all components to absorb any partition weight
+        self.expectationStep()
+        #print("After(Ex):"); self.show()
+        self.maximizationStep()
+        #print("After(Mx):"); self.show()
+        #print("delete:Ncomp=",self.Ncomp)
+        self.resetActive(actives)  #We need to allow all components to absorb any partition weight
         
 #probably don't need this...?
     def update(self):
@@ -615,7 +744,9 @@ class gmmvb:
         self.maximizationStep()
         
         
-    def improveStructure(self,updates,backend=None):
+    def improveStructure(self,updates,backend=None,trials=1):
+        #FIXME trials>1 not implemented
+        #FIXME outdated note
         #Like V2,  continues through, considering splits for each of
         #the whole (at call time) list of components
         #Other differences from V1 are:
@@ -653,16 +784,22 @@ class gmmvb:
             overs=[model.componentOverlap(j,k) for k in range(model.kappa)]
             print("overlaps=",overs)
             overs=np.array(overs)/(sum(overs)+1e-10)
+
+            #As an efficiency move, we do not check for splits of components which have insignificant overlap
+            #with those updated last time.  We reasonably expect that not much will have changed since the
+            #last time that test was done.
             metric=sum([overs[i] for i in last_updates])
             if(metric<UpdateTol):
                 print("Skipping split test of component ",j," with metric ",metric)
                 continue
+
             active=[i for i in range(len(overs)) if overs[i]>tolOverlap]
             print (j,": overlaps =",overs)
             print ("-> active =",active)
-            #Next we downselect to just the relevant points
-            #jpoints=self.samplePoints(points,nSamp=nSamp,target=j,actives=active,w=w)
-            #Work with a parallel test model (on the reduced set of points)
+
+            #We work with a parallel test model for apples to apples comparison
+            #Alternatively, it might be better to run EM on the model to convergence
+            #(over the overlapping components) at this point...
             newmodel=copy.deepcopy(model)
             newmodel.resetActive(active)
             if(need_testmodel):
@@ -673,12 +810,11 @@ class gmmvb:
             if(need_testmodel):
                 testmodel.EMtol=EMtol*tolRelax
                 testmodel.run_EM()
-                print ("testmodel=");testmodel.show()
+                #print ("testmodel=");testmodel.show()
                 print ("testmodel.F=",testmodel.F)
 
-            #  compare new BIC to original clustering BIC [wrt all points]
             #tol-2 cycle
-            print ("newmodel=");newmodel.show()
+            #print ("newmodel=");newmodel.show()
             print ("newmodel.F=",newmodel.F)
             if(need_testmodel):testF=testmodel.F
             else:testF=model.F
@@ -725,15 +861,74 @@ class gmmvb:
                     print ("model.rho =\n",np.array2string(np.array(model.rho),formatter={'float_kind':lambda x: "%.3f" % x}))
                 print ("model.phi=",np.array2string(np.array(model.Ncomp),formatter={'float_kind':lambda x: "%.5f" % x}))
                 if(backend is not None):#do it all over for display purposes
-                    #Need to rework this.....
-                    newmodel=gmm(newmu,model.kappa,newsigma,newphi)
-                    newmodel.EMtol=EMtol*tolRelax
-                    newmodel.run_EM(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights,backend=backend)
-                    if(newmodel.F>model.F and model.F-newmodel.F<EMtol*tolRelax**2):newmodel.EMtol=EMtol
-                    newmodel.run_EM(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights,backend=backend)
+                    print("Need to rework this.....")
+                    #newmodel=gmm(newmu,model.kappa,newsigma,newphi)
+                    #newmodel.EMtol=EMtol*tolRelax
+                    #newmodel.run_EM(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights,backend=backend)
+                    #if(newmodel.F>model.F and model.F-newmodel.F<EMtol*tolRelax**2):newmodel.EMtol=EMtol
+                    #newmodel.run_EM(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights,backend=backend)
 
+        #Sometimes the EM optimization process leads to some empty or near-empty components
+        #For truly empty components it should always be the case that the fit is more optimal if they are removed
+        #We don't assume this though, we check.
+        #print("Checking for empty components")
+        empties=[ j for j in range(model.kappa) if model.Ncomp[j] < emptyCut ]
+        print("\nChecking for deletions: = ",empties)
+        print("  empties = ",empties)
+        Nempty=len(empties)
+        deletions=0
+        
+        #We follow the same procedure for checking the deletions as we did for testing the splits
+        jcount=0
+        for j in range(model.kappa):
+            done=False
+            while(not done):
+                if not j in empties:
+                    done=True
+                    continue
+                #We do the loop over empties this way since we may need to relabel some as we go.
+                jcount+=1
+                print ("\nTrying deletion "+str(jcount)+"/"+str(Nempty)," j=",j, "Ncomp[j]=",model.Ncomp[j])
+
+                #We first compute the overlap of this component with others
+                #Since the component is nearly empty, it won't be much.
+                overs=[model.componentOverlap(j,k) for k in range(model.kappa)]
+                print("overlaps=",overs)
+                overs=np.array(overs)/(sum(overs)+1e-10)
+                active=[i for i in range(len(overs)) if overs[i]>tolOverlap]
+                print (j,": overlaps =",overs)
+                print ("-> active =",active)
+                
+                #We don't bother with running a parallel test model in this case
+                newmodel=copy.deepcopy(model)
+                newmodel.resetActive(active)
+                newmodel.deleteComponent(j)
+                newmodel.EMtol=EMtol
+                newmodel.run_EM()
+                
+                print ("Compare models (deletion)")
+                print ("newmodel.F=",newmodel.F)
+                print ("model.F=",model.F)
+                
+                print ("actives=",newmodel.activeComponents)
+                print ("Fvals orig/new",model.F,newmodel.F)
+
+                if(newmodel.F>model.F):
+                    print ("Deleting non-optimal component with <N>=",model.Ncomp[j])
+                    #We accept the newmodel as model
+                    model=newmodel
+                    #Relabel updates and empties
+                    empties=[ k if k<j else k-1 for k in empties if k!=j ]
+                    updates=[ k if k<j else k-1 for k in updates if k!=j ]
+                    deletions+=1
+                    #we don't run full EM, but we do need to update full partitions and parameters
+                    model.resetActive(range(model.kappa))
+                    model.expectationStep()#update w
+                    model.maximizationStep()
+                    print ("evaluated model: F=",model.F)
+                else: done=True
         print ("returning with Fval=",model.F)
-        return model,updates
+        return model,updates,deletions
 
     def samplePoints(self,nSamp=1500,target=None,actives=None):
         #     nSamp   target # of samples for indicated compt
@@ -844,30 +1039,30 @@ def compute_xgmmvb(points,backend=None):
     #sx=np.array(model.samplePoints(x,nsamp))
     #profile.runctx("model.run_EM_MAP(x,backend=backend)",globals(),locals())
     #model.run_EM(sx,backend=backend)
-    #model.run_EM(backend=backend)
+    model.run_EM(backend=backend)
     oldFval=model.F
     count=0
     updates=[0]
     while(True):
         count+=1
         print ()
-        print ("Beginning xgmm cycle",count)
+        print ("Beginning xgmmvb cycle",count)
         t0=time.time()
         if(count>1):model.computeF()
         oldFval=model.F
         oldkappa=model.kappa
-        model,updates=model.improveStructure(updates,backend=backend)
+        model,updates,deletions=model.improveStructure(updates,backend=backend)
         t1=time.time()
-        print ("improve model time =",t1-t0)
-        print ("kappa=",model.kappa,"  updates=",updates)
-        print ()
-        print ("============")
+        print ("improve structure outcome:")
+        print ("kappa=",model.kappa,"  updates=",updates,"deletions=",deletions)
+        print ("\n   time =",t1-t0)
+        print ("\n============\n")
         model.show()
         model.run_EM(backend=backend)
         model.computeF()
         print ("Fval/old=",model.F,oldFval)
-        if(model.kappa==oldkappa):break
-        print ("full model EM time =",time.time()-t1)
+        if(len(updates)+deletions==0):break
+        print ("full model EM outcome:\n time =",time.time()-t1)
         print ()
         
     return model

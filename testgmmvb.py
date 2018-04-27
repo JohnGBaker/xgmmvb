@@ -25,8 +25,8 @@ parser.add_argument('-s',help="Specify random seed",default="-1",type=int)
 parser.add_argument('-c',help="Number of components to try in model.(Default=k)",default="-1",type=int)
 parser.add_argument('-t',help="Number of trials.(Default="+str(trials)+")",default="-1",type=int)
 parser.add_argument('-n',help="Specify approx number of sample points",default="500",type=float)
-parser.add_argument('--skip',help="Specify text list of columns to skip (comma separated, count from 1")
-parser.add_argument('--down',help="Integer factor by which to downsample the data.")
+parser.add_argument('--skip',help="Specify text list of columns to skip (comma separated, count from 1. (Default=[1,2,3,4,5,12])",default="1,2,3,4,5,12")
+parser.add_argument('--down',help="Integer factor by which to downsample the data.",type=float)
 parser.add_argument('-p',help="doProjection",action='store_true')
 parser.add_argument('-x',help="Allow number of components to vary",action='store_true')
 parser.add_argument('--tol',help="Specify EMtol factor (def 0.01)",default="0.01",type=float)
@@ -88,7 +88,8 @@ if(args.data==None):
 else:
     outname=args.data.replace(".dat","_xgmmvb.pdf")
     with open(args.data) as f:
-        points=np.loadtxt((x.replace(b':',b' ') for x in f))
+        #points=np.loadtxt((x.replace(b':',b' ') for x in f))
+        points=np.loadtxt((x.replace(':',' ') for x in f))
     print ("Raw data line:",points[0])
     parnames="eval,lpost,llike,accrat,prop,dist,phi,inc,lam,beta,psi,one".split(",")
 
@@ -113,7 +114,7 @@ else:
     points=(points-mins)/scales+eps
     print ("Scaled data line:",points[0])
     points=points.tolist()
-    
+    ccov0=[[np.mean(points,0),np.identity(mdim)*np.std(points)**2]]
     
 com=np.zeros(mdim)
 for p in points:com+=p
