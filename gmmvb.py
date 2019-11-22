@@ -11,12 +11,13 @@ import scipy.special
 import copy
 import time
 
-emptyCut=300.0
+emptyCut=20.0
 EMtolfac=0.01
-UpdateTol=0.01
+UpdateTol=0.0001
 gTol=0.001
-need_testmodel=True
+need_testmodel=False
 do_stashing=False #First test of this worked mostly but small numerical differences and only 3% time saving.  Maybe do more experiments
+useSkipFac=False
 
 displayCounter=0
 displayEvery=4
@@ -192,13 +193,14 @@ def ellipse(rho,cov,ic,ix,iy,siglev=2,N_thetas=60):
         return elys,elxs
         
 class gmmvb:
-    def __init__(self,Y,kappa):
+    def __init__(self,Y,kappa,kappa_penalty=0.1):
         self.have_stash=False
         self.needFalt=False
         self.Y=np.array(Y)
         self.N=len(Y)
         self.Y2=np.array([np.outer(self.Y[i,:],self.Y[i,:]) for i in range(self.N)])
         self.kappa=kappa
+        self.kappa_penalty=kappa_penalty
         self.D=len(Y[0])
         self.eta0=get_uninformative_eta0(self.kappa,self.D,self.Y)
         self.Ncomp=[None]*self.kappa
@@ -224,8 +226,28 @@ class gmmvb:
         self.Falt=None
         self.like=None
         self.EMtol=self.eta0[3]*EMtolfac
+        self.skips={}
         self.show()
         
+    def copy(self):
+        #return copy.deepcopy(self)
+        return self.copyA()
+    
+    def copyA(self):
+        other=copy.copy(self)
+        other.Ncomp=copy.deepcopy(self.Ncomp)
+        if(self.needFalt):other.gammabar = self.gammabar.copy
+        other.nu0,other.beta0,other.lamb0,other.rho0,other.Vinv0,other.Vnu0,other.logdetV0=compute_derived_theta(other.kappa,other.D,[np.array([other.eta0[i]]*other.kappa) for i in range(5)])
+        other.A0,other.A_comp0,other.A_Dval0=compute_Aeta(other.D,other.nu0,other.beta0,other.lamb0,other.logdetV0)
+        other.eta=copy.deepcopy(self.eta)
+        other.nu,other.beta,other.lamb,other.rho,other.Vinv,other.Vnu,other.logdetV=compute_derived_theta(other.kappa,other.D,other.eta)
+        other.Aeta,other.A_comp,other.A_Dval=compute_Aeta(other.D,other.nu,other.beta,other.lamb,other.logdetV)
+        
+        #randomly initialize rhos from data point
+        other.rho=self.rho.copy()
+        other.hatgamma=self.hatgamma
+        return other
+    
     def compute_derived_theta(self):
         #This operates over all components in vector form
         #note: eta = [ V^-1 + beta*rho*rho , nu - D , beta*rho , beta , lamb ]
@@ -271,7 +293,7 @@ class gmmvb:
                 if(min(self.hatgamma[i])>1e-4):print ("glog:",min(self.hatgamma[i]),gvec,self.hatgamma[i,:],self.Y[i])
         val = val0-glogg
         val += self.Aeta - self.A0;
-        print(-glogg,val0,val)
+        val -= self.kappa_penalty*math.sqrt(self.N)*self.kappa
         return val
 
     def computeFalt(self):
@@ -304,7 +326,9 @@ class gmmvb:
             - 1.0 + self.beta0[j]/self.beta[j]
             for j in range(self.kappa) ])
         #print("altF parts:",like, Dterm, Vterm, nuterm, betaterm)
-        return like + (  Dterm + Vterm + nuterm + betaterm ) 
+        penalty = self.kappa_penalty*math.sqrt(self.N)*self.kappa
+
+        return like + (  Dterm + Vterm + nuterm + betaterm ) - penalty
     
     def resetActive(self,newActive):
         self.stashRestore()
@@ -768,6 +792,7 @@ class gmmvb:
         #print("****",self.F)
         updatelist=np.random.permutation(self.kappa)
         model=copy.deepcopy(self)
+        #model=self.copy()
         #model.evaluate(points)
         EMtol=self.EMtol
         tolRelax=10
@@ -789,10 +814,18 @@ class gmmvb:
             #with those updated last time.  We reasonably expect that not much will have changed since the
             #last time that test was done.
             metric=sum([overs[i] for i in last_updates])
-            if(metric<UpdateTol):
-                print("Skipping split test of component ",j," with metric ",metric)
+            skipfac=1
+            if(useSkipFac and model.skips.get(j) is not None):skipfac=model.skips[j]
+            if(skipfac<3 and metric<UpdateTol):
+                if(model.skips.get(j) is None):model.skips[j]=1
+                else:
+                    model.skips[j]=model.skips[j]+1
+                print("Skipping split test of component ",j," with metric ",metric," skip",model.skips[j])
                 continue
-
+            print ("setting skips[",j,"]=0")
+            model.skips[j]=0
+            print(model.skips)
+            
             active=[i for i in range(len(overs)) if overs[i]>tolOverlap]
             print (j,": overlaps =",overs)
             print ("-> active =",active)
@@ -800,15 +833,18 @@ class gmmvb:
             #We work with a parallel test model for apples to apples comparison
             #Alternatively, it might be better to run EM on the model to convergence
             #(over the overlapping components) at this point...
+            model.resetActive(active)
+            model.run_EM()
             newmodel=copy.deepcopy(model)
-            newmodel.resetActive(active)
+            #newmodel=model.copy()
+            newmodel.EMtol=EMtol*tolRelax
             if(need_testmodel):
                 testmodel=copy.deepcopy(newmodel)
+                #testmodel=newmodel.copy()
             newmodel.splitComponent(j)
-            newmodel.EMtol=EMtol*tolRelax
             newmodel.run_EM()
             if(need_testmodel):
-                testmodel.EMtol=EMtol*tolRelax
+                #testmodel.EMtol=EMtol*tolRelax
                 testmodel.run_EM()
                 #print ("testmodel=");testmodel.show()
                 print ("testmodel.F=",testmodel.F)
@@ -868,6 +904,8 @@ class gmmvb:
                     #if(newmodel.F>model.F and model.F-newmodel.F<EMtol*tolRelax**2):newmodel.EMtol=EMtol
                     #newmodel.run_EM(jpoints,activeComponents=actives,sloppyWeights=sloppyWeights,backend=backend)
 
+        print("before deletions: skips=",model.skips)
+
         #Sometimes the EM optimization process leads to some empty or near-empty components
         #For truly empty components it should always be the case that the fit is more optimal if they are removed
         #We don't assume this though, we check.
@@ -901,6 +939,7 @@ class gmmvb:
                 
                 #We don't bother with running a parallel test model in this case
                 newmodel=copy.deepcopy(model)
+                #newmodel=model.copy()
                 newmodel.resetActive(active)
                 newmodel.deleteComponent(j)
                 newmodel.EMtol=EMtol
@@ -920,6 +959,10 @@ class gmmvb:
                     #Relabel updates and empties
                     empties=[ k if k<j else k-1 for k in empties if k!=j ]
                     updates=[ k if k<j else k-1 for k in updates if k!=j ]
+                    newskips=[ (k,model.skips[k]) if k<j else (k-1,model.skips[k]) for k in model.skips if k!=j ]
+                    print("newskips=",newskips)
+                    model.skips=dict(newskips)
+                    print("newskips=",model.skips)
                     deletions+=1
                     #we don't run full EM, but we do need to update full partitions and parameters
                     model.resetActive(range(model.kappa))
@@ -927,6 +970,7 @@ class gmmvb:
                     model.maximizationStep()
                     print ("evaluated model: F=",model.F)
                 else: done=True
+        print ("after deletions: skips=",model.skips)
         print ("returning with Fval=",model.F)
         return model,updates,deletions
 
@@ -1055,6 +1099,7 @@ def compute_xgmmvb(points,backend=None):
         t1=time.time()
         print ("improve structure outcome:")
         print ("kappa=",model.kappa,"  updates=",updates,"deletions=",deletions)
+        print ("skips=",model.skips)
         print ("\n   time =",t1-t0)
         print ("\n============\n")
         model.show()
