@@ -189,19 +189,21 @@ def ellipse(rho,cov,ic,ix,iy,siglev=2,N_thetas=60):
         lev_fac=siglev
         #print ("scales for quantile level = ",siglev," -> ",lev_fac,": (",xcoeff*lev_fac,",",ycoeff*lev_fac,")")
         elxs=[rho[iy]+lev_fac*xcoeff*(acoeff*math.cos(th)*math.cos(ang)-bcoeff*math.sin(th)*math.sin(ang)) for th in thetas] 
-        elys=[rho[ix]+lev_fac*ycoeff*(acoeff*math.cos(th)*math.sin(ang)+bcoeff*math.sin(th)*math.cos(ang)) for th in thetas] 
+        elys=[rho[ix]+lev_fac*ycoeff*(acoeff*math.cos(th)*math.sin(ang)+bcoeff*math.sin(th)*math.cos(ang)) for th in thetas]
         return elys,elxs
         
 class gmmvb:
-    def __init__(self,Y,kappa,kappa_penalty=0.1):
+    def __init__(self,Y,kappa,kappa_penalty=0.1,logistic=False):
         self.have_stash=False
         self.needFalt=False
         self.Y=np.array(Y)
         self.N=len(Y)
+        self.D=len(Y[0])
+        self.logistic=logistic
+        self.set_map()
         self.Y2=np.array([np.outer(self.Y[i,:],self.Y[i,:]) for i in range(self.N)])
         self.kappa=kappa
         self.kappa_penalty=kappa_penalty
-        self.D=len(Y[0])
         self.eta0=get_uninformative_eta0(self.kappa,self.D,self.Y)
         self.Ncomp=[None]*self.kappa
         if(self.needFalt):self.gammabar = np.zeros((self.N,self.kappa))
@@ -1021,11 +1023,94 @@ class gmmvb:
             clusters[ic].append(p[i])
         return clusters
 
-    def ellipse(self,ic,ix,iy,siglev=2,N_thetas=60):
-        cov=self.Vinv[ic,:,:]*((1+1.0/self.beta[ic])/max([1,self.nu[ic]-self.D-1]))
-        return ellipse(self.rho[ic],cov,ic,ix,iy,siglev,N_thetas)
+    def set_map(self):
+        points=self.Y
+        #rescale the points to a unit hypercube
+        mins=np.amin(points,axis=0)
+        self.mapmins=mins
+        maxs=np.amax(points,axis=0)
+        self.mapeps=1.0/self.N
+        scales=(maxs-mins)*(1+2*self.mapeps)
+        self.mapscales=scales
+        print ("map scales=",scales)
+        points=(points-mins)/scales+self.mapeps
+        #print ("Scaled data line:",points[0])
+        #points=points.tolist()
         
-    def plot(self,clusters,ix=0,iy=1,parnames=None,backend=None,truths=None):
+        #Optionally now apply (inverse) logistic map to soften edge boundaries
+        #This will stretch the points near the edge. Since we have already
+        #already forced at least one point to be near the edge, this could have
+        #have the effect that the max/min points will be stretched to be large
+        #outliers.  We try to prevent that by adjusting the edge farther out if
+        #needed.  In particular we ensure that the closest point is no closer
+        #than half the edge distance for the nth closest point.
+        if not self.logistic: return
+        nclose=1+int(0.01*len(points))
+        self.mapepslo=np.zeros(self.D)
+        self.mapepshi=np.zeros(self.D)
+        for ix in range(self.D):
+            print('ix minmax:',ix,min(points[:,ix]),max(points[:,ix]))
+            vals=np.sort(points[:,ix])
+            epslo=max([self.mapeps,vals[nclose]/2.0])
+            epshi=max([self.mapeps,(1.0-vals[-(nclose+1)])/2.0])
+            self.mapepslo[ix]=epslo
+            self.mapepshi[ix]=epshi
+            scale=(1-2*self.mapeps)/(1.0-epslo-epshi)
+            print('  eps,epslo,epshi,scale:',self.mapeps,epslo,epshi,scale)
+            points[:,ix]=epslo+(points[:,ix]-self.mapeps)/scale
+            print(' minmax:',min(points[:,ix]),max(points[:,ix]))
+        #now the logit map so that min/max points are roughly preserved
+        #We specifically use x->x'=(1+ln(1/x-1)/ln(eps))/2
+        twologeps=2.0*np.log(self.mapeps)
+        for ix in range(self.D):
+            points[:,ix]=0.5+np.log(1.0/points[:,ix]-1)/twologeps
+            print(' ix,minmax:',ix,min(points[:,ix]),max(points[:,ix]))
+        self.Y=points
+        
+    def unmap(self,xs,nologistic=False):
+        #Here we put the data back into original form.
+        for ix in range(self.D):
+            if self.logistic and not nologistic: 
+                #First apply logistic inverse-map x'->x=(1+eps^(2*x-1))^-1
+                #inverse of: points[:,ix]=0.5+np.log(1.0/points[:,ix]-1)/twologeps
+                #print(' 1.minmax:',min(xs[:,ix]),max(xs[:,ix]))
+                xs[:,ix]=(1+self.mapeps**(2*xs[:,ix]-1))**-1
+                #print(' 2.minmax:',min(xs[:,ix]),max(xs[:,ix]))
+
+
+                #Then adjust the window edges back
+                epslo=self.mapepslo[ix]
+                epshi=self.mapepshi[ix]
+                scale=(1-2*self.mapeps)/(1.0-epslo-epshi)
+                #inverse of: points[:,ix]=epslo+(points[:,ix]-self.mapeps)/scale
+                xs[:,ix]=self.mapeps+(xs[:,ix]-epslo)*scale
+                #print(' 3.minmax:',min(xs[:,ix]),max(xs[:,ix]))
+
+            #shift and scale back to input form
+            scale=self.mapscales[ix]
+            minx=self.mapmins[ix]
+            #print('unmap: ix,minx,scale:',ix,minx,scale)
+            #inverse of: points=(points-mins)/scales+self.mapeps
+            xs[:,ix]=minx+scale*(xs[:,ix]-self.mapeps)
+            #print(' 4.minmax:',min(xs[:,ix]),max(xs[:,ix]))
+                            
+        return xs            
+        
+
+    def ellipse(self,ic,ix,iy,siglev=2,N_thetas=60,unmap=False):
+        cov=self.Vinv[ic,:,:]*((1+1.0/self.beta[ic])/max([1,self.nu[ic]-self.D-1]))
+        elx,ely=ellipse(self.rho[ic],cov,ic,ix,iy,siglev,N_thetas)
+        if unmap:
+            #The transform mapping works on the full param space, so...
+            els=np.zeros((N_thetas,self.D))
+            els[:,ix]=elx
+            els[:,iy]=ely
+            els=self.unmap(els).T
+            elx=els[ix];
+            ely=els[iy]
+        return  elx,ely
+        
+    def plot(self,clusters,ix=0,iy=1,parnames=None,backend=None,truths=None,unmap=True):
         #n=sum([len(c) for c in clusters])
         #ndown=n/1000
         ndown=1
@@ -1036,16 +1121,28 @@ class gmmvb:
             if(len(p)<1):continue
             c=np.array(self.rho[j])
             col=fakexkcdcolors[j%len(fakexkcdcolors)]
-            #print p.shape
-            plt.scatter(p[::ndown,ix],p[::ndown,iy],color=col,marker=".",s=0.1)
-            plt.scatter([c[ix]],[c[iy]],color='k',marker="*")
-            plt.scatter([c[ix]],[c[iy]],color=col,marker=".")
-            elxs,elys=self.ellipse(j,ix,iy,1.0)
-            plt.plot(elxs,elys,color='k')
-            elxs,elys=self.ellipse(j,ix,iy,0.98)
-            plt.plot(elxs,elys,color=col)
-            plt.xlim([0,1]) 
-            plt.ylim([0,1]) 
+            ps=p[::ndown]
+            if unmap: ps=self.unmap(ps)
+            xs=ps[:,ix]
+            ys=ps[:,iy]
+            plt.scatter(xs,ys,color=col,marker=".",s=0.1)
+            cs=c.reshape(1,-1)
+            if unmap:cs=self.unmap(cs)
+            cx=cs[:,ix]
+            cy=cs[:,iy]
+            plt.scatter(cx,cy,color='k',marker="*")
+            plt.scatter(cx,cy,color=col,marker=".")
+            elx,ely=self.ellipse(j,ix,iy,1.0,unmap=unmap)
+            plt.plot(elx,ely,color='k')
+            elx,ely=self.ellipse(j,ix,iy,0.98,unmap=unmap)
+            plt.plot(elx,ely,color=col)
+            #print('transforming min/max')
+            #print('xminmax,yminmax:',min(xs),max(xs),min(ys),max(ys))
+            minmax=np.array([[0.0]*self.D,[1.0]*self.D])
+            minmax=self.unmap(minmax,True)
+            #print('minmax',minmax)
+            plt.xlim(minmax[:,0]) 
+            plt.ylim(minmax[:,1]) 
             if(parnames is None):
                 parnames=["p"+str(ip) for ip in range(self.D)]
             plt.xlabel(parnames[ix])
@@ -1075,11 +1172,11 @@ def compute_gmmvb(points,kappa,backend=None):
     model.run_EM(backend=backend)
     return model
 
-def compute_xgmmvb(points,backend=None):
+def compute_xgmmvb(points,backend=None,k_penalty=0.1,logistic=False):
     k=1
     #nsamp=5000
     x=np.array(points)
-    model=gmmvb(x,k)
+    model=gmmvb(x,k,k_penalty,logistic=logistic)
     #sx=np.array(model.samplePoints(x,nsamp))
     #profile.runctx("model.run_EM_MAP(x,backend=backend)",globals(),locals())
     #model.run_EM(sx,backend=backend)

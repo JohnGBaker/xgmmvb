@@ -20,6 +20,7 @@ trials=1
 parser = argparse.ArgumentParser(description="Perform Gaussian Mixture Model Variational Bayesian clustering analysis on data")
 parser.add_argument('--data',help="File with the source data")
 parser.add_argument('-k',help="Specify number of components [for test data] (def 5)",default="5",type=int)
+parser.add_argument('--kp',help="Penalty weighting for adding components",default="0.1",type=float)
 parser.add_argument('-d',help="Dimension (def 2)",default="2",type=int)
 parser.add_argument('-s',help="Specify random seed",default="-1",type=int)
 parser.add_argument('-c',help="Number of components to try in model.(Default=k)",default="-1",type=int)
@@ -28,9 +29,14 @@ parser.add_argument('-n',help="Specify approx number of sample points",default="
 parser.add_argument('--skip',help="Specify text list of columns to skip (comma separated, count from 1. (Default=[1,2,3,4,5,12])",default="1,2,3,4,5,12")
 parser.add_argument('--down',help="Integer factor by which to downsample the data.",type=float)
 parser.add_argument('-p',help="doProjection",action='store_true')
+parser.add_argument('--logit',help="Use logistic map on all params.",action='store_true')
 parser.add_argument('-x',help="Allow number of components to vary",action='store_true')
 parser.add_argument('--tol',help="Specify EMtol factor (def 0.01)",default="0.01",type=float)
+parser.add_argument('-L',help="Label to append to pdf output file base name.",default="",type=str)
+
 args=parser.parse_args()
+
+print("args:",args)
 
 #set seed
 if(args.s<0):seed=np.random.randint(0,1000000)
@@ -86,7 +92,10 @@ if(args.data==None):
         #print (np.array(points))
         print ("generated Npts=",len(points))
 else:
-    outname=args.data.replace(".dat","_xgmmvb.pdf")
+    if args.L=="":
+        outname=args.data.replace(".dat","_xgmmvb.pdf")
+    else:
+        outname=args.data.replace(".dat","_xgmmvb-"+args.L+".pdf")
     with open(args.data) as f:
         #points=np.loadtxt((x.replace(b':',b' ') for x in f))
         points=np.loadtxt((x.replace(':',' ') for x in f))
@@ -114,7 +123,8 @@ else:
     points=(points-mins)/scales+eps
     print ("Scaled data line:",points[0])
     points=points.tolist()
-    ccov0=[[np.mean(points,0),np.identity(mdim)*np.std(points)**2]]
+    #ccov0=[[np.mean(points,0),np.identity(mdim)*np.std(points)**2]]
+    ccov0=None
     
 com=np.zeros(mdim)
 for p in points:com+=p
@@ -129,7 +139,7 @@ time0=1
 best_model=None
 best_lpost=None
 best_Fval=None
-pp = PdfPages(outname)
+#pp = PdfPages(outname)
 
 Fvals=[]
 models=[]
@@ -139,7 +149,7 @@ for i in range(trials):
         start=time.time()
         niter=0
         #model=gmmvb.compute_gmmvb(points,2,pp)
-        model=gmmvb.compute_gmmvb(points,ccomp)
+        model=gmmvb.compute_gmmvb(points,ccomp,logistic=args.logit)
         #model=gmm.compute_gmmvb(points,2,"screen")
         dtime=time.time()-start
         print ("Npts=",Npts)
@@ -161,7 +171,8 @@ for i in range(trials):
         start=time.time()
         niter=0
         #model=gmmvb.compute_xgmmvb(points,pp)
-        model=gmmvb.compute_xgmmvb(points)
+        print("Computing xgmmvb model with kappa_penalty=",args.kp)
+        model=gmmvb.compute_xgmmvb(points,k_penalty=args.kp,logistic=args.logit)
         dtime=time.time()-start
         print ("Found",model.kappa," components")
         print ("weights/centers:",zip(model.Ncomp,model.rho))
@@ -186,11 +197,16 @@ print ("weights=",best_model.Ncomp)
 
     
 if(do_dump ):
-    #pp = PdfPages(outname)
+    pp = PdfPages(outname)
+    #pp=None
     clusters=best_model.draw_clusters()
     #print("ccov0=",ccov0)
     for ix in range(mdim-1):
         for iy in range(ix+1,mdim):
             best_model.plot(clusters,ix,iy,parnames,pp,truths=ccov0)
-pp.close()
-
+    if args.logit:
+        for ix in range(mdim-1):
+            for iy in range(ix+1,mdim):
+                best_model.plot(clusters,ix,iy,parnames,pp,truths=ccov0,unmap=False)
+    print("Plots written to ",outname)
+    pp.close()
