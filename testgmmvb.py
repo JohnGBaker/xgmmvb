@@ -168,15 +168,20 @@ for i in range(trials):
             best_model=model
             
     if(do_xgmmvb):
+        import cProfile
+        pf=cProfile.Profile()
+        pf.enable()
         start=time.time()
         niter=0
         #model=gmmvb.compute_xgmmvb(points,pp)
         print("Computing xgmmvb model with kappa_penalty=",args.kp)
         model=gmmvb.compute_xgmmvb(points,k_penalty=args.kp,logistic=args.logit)
         dtime=time.time()-start
+        pf.disable()
         print ("Found",model.kappa," components")
         print ("weights/centers:",zip(model.Ncomp,model.rho))
         print ("time=",dtime,"time/time0=",dtime/time0)
+        pf.print_stats();
         print ("----------")
         time0=dtime
         Fval=model.F
@@ -190,9 +195,10 @@ for i in range(trials):
 
 print ("\nModels:")
 for f,m in zip(Fvals,models):
-    print("  F=",f,"  W=",m.Ncomp)
+    print("  F=",f, "kappa=",m.kappa,"  W=",m.Ncomp)
 print ("mean time =",np.mean(times))
 print ("best model F=",best_model.F)
+print ("best model kappa=",best_model.kappa)
 print ("weights=",best_model.Ncomp)
 
     

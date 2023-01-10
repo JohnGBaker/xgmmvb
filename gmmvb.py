@@ -10,11 +10,12 @@ import scipy
 import scipy.special
 import copy
 import time
+from src import gmmvbcc
 
 emptyCut=20.0
 EMtolfac=0.01
-UpdateTol=0.0001
-gTol=0.001
+UpdateTol=0.001
+gTol=0.003
 need_testmodel=False
 do_stashing=False #First test of this worked mostly but small numerical differences and only 3% time saving.  Maybe do more experiments
 useSkipFac=False
@@ -286,7 +287,9 @@ class gmmvb:
         else:N=self.N
         D=self.D
         val0  = -N*D/2.0*log2pi
-        glogg= sum([self.hatgamma[i,j]*math.log(1e-300+self.hatgamma[i,j]) for j in range(self.kappa) for i in range(self.N)])
+        #glogg= sum([self.hatgamma[i,j]*math.log(1e-300+self.hatgamma[i,j]) for j in range(self.kappa) for i in range(self.N)])
+        glogg=gmmvbcc.computeF_core_cc(self.hatgamma)
+
         if(self.have_stash):glogg+=self.stash_glogg
         if(False):
             for i in range(self.N):
@@ -367,7 +370,30 @@ class gmmvb:
         for j in self.activeComponents:
             log_gamma0[j] += ( self.logdetV[j] + digammaDhalf(self.nu[j],self.D) - self.D/self.beta[j] ) / 2.0
         self.logLike=0
-        #Now loop over the data for the rest of the terms and normalization
+
+        if(True):
+            Vnulist=[self.Vnu[i] for i in range(self.kappa)]
+            gmmvbcc.expectation_core_loop_cc(
+			   list(self.activeComponents),
+			   gTol,
+			   self.Y,
+			   self.g,
+			   self.rho,
+			   Vnulist,
+			   barlamb,
+			   log_gamma0,
+			   self.hatgamma
+            );
+        else:
+            self.expectation_core_loop(barlamb,log_gamma0)
+
+        if(not self.have_g):self.have_g=True
+        self.updated_eta=False
+        self.updated_theta=False
+        self.updated_gamma=True
+        
+    def expectation_core_loop(self,barlamb,log_gamma0):
+        #Loop over the data for the rest of the terms and normalization
         for i in range(self.N):
             if(self.g[i]<gTol):continue #Leave insignificant hatgamma values unchanged for insignificantly overlapping data
             #First we compute log(gamma) as needed
@@ -400,10 +426,7 @@ class gmmvb:
                 j=self.activeComponents[k]
                 self.hatgamma[i,j]=gamma[k]*normfac
                 #print "i,j,hatgamma,gamma,normfac,g",i,j,self.hatgamma[i,j],gamma[k],normfac,self.g[i]
-        if(not self.have_g):self.have_g=True
-        self.updated_eta=False
-        self.updated_theta=False
-        self.updated_gamma=True
+
             
     def componentOverlap(self,j1,j2):
         assert(not self.have_stash)
@@ -658,7 +681,7 @@ class gmmvb:
         #  -The set a new component mean x1 reflected opposite the original
         #    -This component will be added on the end
         #  -The rest of the theta params are defined as in Eq 34 \ref{eq:split}
-        print("split:entry:Ncomp=",self.Ncomp)
+        #print("split:entry:Ncomp=",self.Ncomp)
         #print("Before split:");self.show()
         assert(self.updated_theta)
         assert(not self.have_stash)
@@ -693,7 +716,7 @@ class gmmvb:
         #self.hatgamma=np.zeros((self.N,self.kappa))
         self.A_comp = [None]*self.kappa
         self.activeComponents=actives.copy()
-        print("Split:actives=",self.activeComponents)
+        #print("Split:actives=",self.activeComponents)
         #We don't call resetActive because, in this case g[i] specifically should not change because of the split
         #Update prior info
         self.nu0,self.beta0,self.lamb0,self.rho0,self.Vinv0,self.Vnu0,self.logdetV0=compute_derived_theta(self.kappa,self.D,[np.array([self.eta0[i]]*self.kappa) for i in range(5)])
@@ -716,7 +739,7 @@ class gmmvb:
         #print("After(Ex):"); self.show()
         self.maximizationStep()
         #print("After(Mx):"); self.show()
-        print("Split:Ncomp=",self.Ncomp)
+        #print("Split:Ncomp=",self.Ncomp)
         if(do_stashing):self.request_stash=True
         
     def deleteComponent(self,j):
